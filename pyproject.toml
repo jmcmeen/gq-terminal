@@ -1,0 +1,99 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gq-terminal"
+dynamic = ["version"]
+description = "Python interface for GQ GMC-600 geiger counter using GQ-RFC1201 protocol"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+keywords = ["geiger", "counter", "radiation", "gmc-600", "gq", "electronics", "serial"]
+authors = [
+    { name = "j. mcmeen" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: System :: Hardware",
+    "Topic :: Communications",
+]
+dependencies = [
+    "pyserial>=3.5",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black",
+    "flake8",
+    "mypy",
+]
+
+[project.urls]
+Documentation = "https://github.com/jmcmeen/gq-terminal#readme"
+Issues = "https://github.com/jmcmeen/gq-terminal/issues"
+Source = "https://github.com/jmcmeen/gq-terminal"
+
+[project.scripts]
+gq-terminal = "gq_terminal.cli:main"
+
+[tool.hatch.version]
+path = "src/gq_terminal/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gq_terminal"]
+
+[tool.black]
+target-version = ["py38"]
+line-length = 88
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--cov=gq_terminal --cov-report=term-missing"
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
