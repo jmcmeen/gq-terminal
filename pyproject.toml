@@ -1,0 +1,114 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gq-terminal"
+version = "0.1.0"
+description = "Python interface for GQ GMC geiger counters using the GQ-RFC1201 protocol"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["geiger", "counter", "radiation", "gmc-600", "gq", "electronics", "serial"]
+authors = [
+    { name = "John McMeen", email = "johnmcmeen@gmail.com" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: System :: Hardware",
+    "Topic :: Communications",
+]
+dependencies = [
+    "pyserial>=3.5",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black",
+    "ruff",
+    "mypy",
+    "types-pyserial",
+    "build",
+]
+
+[project.urls]
+Documentation = "https://github.com/jmcmeen/gq-terminal#readme"
+Issues = "https://github.com/jmcmeen/gq-terminal/issues"
+Source = "https://github.com/jmcmeen/gq-terminal"
+Changelog = "https://github.com/jmcmeen/gq-terminal/blob/main/CHANGELOG.md"
+
+[project.scripts]
+gq-terminal = "gq_terminal.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gq_terminal"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/gq_terminal",
+    "tests",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CITATION.cff",
+    "pyproject.toml",
+]
+
+[tool.black]
+target-version = ["py310"]
+line-length = 88
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["gq_terminal"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
