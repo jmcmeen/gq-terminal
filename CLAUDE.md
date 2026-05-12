@@ -10,7 +10,7 @@ port using the [GQ-RFC1201](https://www.gqelectronicsllc.com/download/GQ-RFC1201
 protocol. Released on PyPI as `gq-terminal` and archived on Zenodo (each
 GitHub release mints a DOI).
 
-It is a **scientific instrument library**. Two consequences:
+It is a **scientific instrument library**. Three consequences:
 
 1. **Correctness matters more than features.** A subtle parsing bug in
    `get_cpm` produces silently-wrong radiation readings, which is bad. Prefer
@@ -19,6 +19,14 @@ It is a **scientific instrument library**. Two consequences:
 2. **Citability matters.** Behavior of a tagged release is treated as
    archival. Don't quietly change semantics of public methods after a
    release — bump the version and changelog the break.
+3. **The safety disclaimer at the top of README.md is load-bearing.** It
+   establishes that this library is not a certified instrument and is not
+   to be used for safety-, regulatory-, or medical-decision-making. Do not
+   soften or remove it. Do not add language anywhere in the codebase that
+   could read as a calibration / accuracy guarantee — even casually
+   ("accurate radiation readings", "reliable measurements", etc.). If a
+   user-facing change increases the apparent authoritativeness of the
+   output (e.g., adding a "certified" mode), push back.
 
 ## Repository layout
 
