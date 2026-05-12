@@ -4,27 +4,26 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gq-terminal"
-dynamic = ["version"]
-description = "Python interface for GQ GMC-600 geiger counter using GQ-RFC1201 protocol"
+version = "0.1.0"
+description = "Python interface for GQ GMC geiger counters using the GQ-RFC1201 protocol"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["geiger", "counter", "radiation", "gmc-600", "gq", "electronics", "serial"]
 authors = [
-    { name = "j. mcmeen" }
+    { name = "John McMeen", email = "johnmcmeen@gmail.com" },
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: System :: Hardware",
     "Topic :: Communications",
@@ -39,52 +38,68 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
     "black",
-    "flake8",
+    "ruff",
     "mypy",
+    "types-pyserial",
+    "build",
 ]
 
 [project.urls]
 Documentation = "https://github.com/jmcmeen/gq-terminal#readme"
 Issues = "https://github.com/jmcmeen/gq-terminal/issues"
 Source = "https://github.com/jmcmeen/gq-terminal"
+Changelog = "https://github.com/jmcmeen/gq-terminal/blob/main/CHANGELOG.md"
 
 [project.scripts]
 gq-terminal = "gq_terminal.cli:main"
 
-[tool.hatch.version]
-path = "src/gq_terminal/__init__.py"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/gq_terminal"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/gq_terminal",
+    "tests",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CITATION.cff",
+    "pyproject.toml",
+]
+
 [tool.black]
-target-version = ["py38"]
+target-version = ["py310"]
 line-length = 88
-include = '\.pyi?$'
-exclude = '''
-/(
-    \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-)/
-'''
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--cov=gq_terminal --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["gq_terminal"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

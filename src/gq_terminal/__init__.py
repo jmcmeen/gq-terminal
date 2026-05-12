@@ -1,11 +1,12 @@
-"""
-GQ Terminal - Python interface for GQ GMC-600 geiger counter.
+"""GQ Terminal — Python interface for GQ GMC geiger counters (GQ-RFC1201)."""
 
-This package provides a Python interface for communicating with GQ GMC-600
-geiger counters using the GQ-RFC1201 protocol over serial connection.
-"""
+from importlib.metadata import PackageNotFoundError, version
 
-from .interface import GMCInterface
+from .interface import GMCError, GMCInterface, GMCNotConnectedError
 
-__version__ = "0.1.0"
-__all__ = ["GMCInterface"]
+try:
+    __version__ = version("gq-terminal")
+except PackageNotFoundError:  # editable install before metadata is built
+    __version__ = "0.0.0+unknown"
+
+__all__ = ["GMCInterface", "GMCError", "GMCNotConnectedError", "__version__"]

@@ -1,0 +1,22 @@
+{
+  "title": "GQ Terminal: a Python interface for GQ GMC geiger counters",
+  "description": "A Python library and command-line tool for communicating with GQ GMC geiger counters (GMC-280, GMC-300, GMC-320, GMC-500, GMC-600) over serial using the GQ-RFC1201 protocol. Supports real-time CPS/CPM monitoring, configuration access, historical data retrieval, and CSV logging.",
+  "license": "MIT",
+  "upload_type": "software",
+  "access_right": "open",
+  "keywords": [
+    "geiger counter",
+    "radiation monitoring",
+    "GQ GMC",
+    "GQ-RFC1201",
+    "serial communication",
+    "python"
+  ],
+  "creators": [
+    {
+      "name": "McMeen, John",
+      "orcid": "0009-0003-8141-567X",
+      "affiliation": ""
+    }
+  ]
+}

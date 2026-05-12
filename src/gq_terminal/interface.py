@@ -1,384 +1,384 @@
 """
-GMC-600 Geiger Counter Interface
-Communication interface for GQ GMC-600 geiger counter using the GQ-RFC1201 protocol.
+GMC Geiger Counter Interface.
+
+Communication interface for GQ GMC geiger counters using the GQ-RFC1201
+protocol over serial. Spec: https://www.gqelectronicsllc.com/download/GQ-RFC1201.txt
+
+Tested against the GMC-600; other GMC-280/300/320 models should be largely
+compatible but a few commands (temperature, gyroscope, datetime) require
+firmware revisions noted in the protocol document.
 """
 
-import serial
+import logging
 import struct
 import time
-from typing import Optional, Tuple
 from datetime import datetime
+from types import TracebackType
+
+import serial
+
+logger = logging.getLogger(__name__)
+
+_ACK = 0xAA
+
+
+class GMCError(Exception):
+    """Base exception for GMC communication errors."""
+
+
+class GMCNotConnectedError(GMCError):
+    """Raised when an operation is attempted on a disconnected device."""
 
 
 class GMCInterface:
-    """Interface class for GMC geiger counter communication."""
-    
+    """Interface for a GQ GMC geiger counter over a serial connection."""
+
     def __init__(self, port: str, baudrate: int = 115200, timeout: float = 2.0):
         """
-        Initialize GMC interface.
-        
         Args:
-            port: Serial port (e.g., 'COM3' on Windows, '/dev/ttyUSB0' on Linux)
-            baudrate: Communication speed (115200 for GMC-600 with latest firmware)
-            timeout: Serial read timeout in seconds
+            port: Serial port (e.g., ``'COM3'`` on Windows,
+                ``'/dev/ttyUSB0'`` on Linux).
+            baudrate: 115200 for GMC-600 / current firmware; 57600 for older GMC-300.
+            timeout: Per-read timeout in seconds.
         """
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
-        self.serial_conn: Optional[serial.Serial] = None
+        self.serial_conn: serial.Serial | None = None
         self.heartbeat_active = False
-    
+        # GMC-500/600/800 family returns CPM and heartbeat CPS as 4 bytes;
+        # the older GMC-280/300/320 family returns 2. Detected lazily from GETVER.
+        self._cpm_width: int | None = None
+        # Cached GETVER response. Length is firmware-dependent (14 bytes on the
+        # original spec, 15 on GMC-600+ Re.2.22, etc.), so we use a drain read
+        # and remember the result to avoid round-tripping it on every call.
+        self._version: str | None = None
+
     def connect(self) -> bool:
-        """
-        Establish serial connection to GMC-600.
-        
-        Returns:
-            True if connection successful, False otherwise
-        """
+        """Open the serial port. Returns True on success, False on serial error."""
         try:
             self.serial_conn = serial.Serial(
                 port=self.port,
                 baudrate=self.baudrate,
-                bytesize=8,
+                bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
-                stopbits=1,
-                timeout=self.timeout
+                stopbits=serial.STOPBITS_ONE,
+                timeout=self.timeout,
             )
             return self.serial_conn.is_open
-        except serial.SerialException as e:
-            print(f"Failed to connect: {e}")
+        except serial.SerialException:
+            logger.exception("Failed to open serial port %s", self.port)
             return False
-    
-    def disconnect(self):
-        """Close serial connection."""
+
+    def disconnect(self) -> None:
+        """Close the serial port. Stops the heartbeat first if active."""
         if self.serial_conn and self.serial_conn.is_open:
-            self.heartbeat_active = False
+            if self.heartbeat_active:
+                try:
+                    self._write(b"<HEARTBEAT0>>")
+                except serial.SerialException:
+                    pass
+                self.heartbeat_active = False
             self.serial_conn.close()
-    
-    def _send_command(self, command: str) -> bytes:
+
+    def __enter__(self) -> "GMCInterface":
+        if not self.connect():
+            raise GMCError(f"Could not connect to {self.port}")
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.disconnect()
+
+    def _require_conn(self) -> serial.Serial:
+        if self.serial_conn is None or not self.serial_conn.is_open:
+            raise GMCNotConnectedError("Not connected to device")
+        return self.serial_conn
+
+    def _write(self, data: bytes) -> None:
+        conn = self._require_conn()
+        conn.write(data)
+        conn.flush()
+
+    def _read_exact(self, n: int) -> bytes:
+        """Read exactly ``n`` bytes or raise GMCError on short read (timeout)."""
+        conn = self._require_conn()
+        buf = conn.read(n)
+        if len(buf) != n:
+            raise GMCError(f"Short read: expected {n} bytes, got {len(buf)}")
+        return buf
+
+    def _send(self, command: bytes, response_len: int) -> bytes:
+        """Send a raw command (including delimiters) and read a fixed-length reply."""
+        self._write(command)
+        if response_len == 0:
+            return b""
+        return self._read_exact(response_len)
+
+    def _drain_response(self, command: bytes, settle: float = 0.1) -> bytes:
+        """Send a command and read whatever the device sends back.
+
+        Use for responses whose length is firmware-dependent. Polls
+        ``in_waiting`` until two consecutive checks agree, so a slow device
+        finishing a long transfer (e.g. GETCFG's 256–512 bytes) isn't cut off.
         """
-        Send command to GMC-600 and return response.
-        
-        Args:
-            command: Command string without < and >> delimiters
-            
-        Returns:
-            Raw response bytes
-        """
-        if not self.serial_conn or not self.serial_conn.is_open:
-            raise RuntimeError("Not connected to device")
-        
-        full_command = f"<{command}>>"
-        self.serial_conn.write(full_command.encode('ascii'))
-        self.serial_conn.flush()
-        
-        # Small delay to ensure command is processed
-        time.sleep(0.1)
-        
-        response = self.serial_conn.read_all()
-        return response
-    
+        conn = self._require_conn()
+        conn.reset_input_buffer()
+        self._write(command)
+        time.sleep(settle)
+        last = -1
+        n = conn.in_waiting
+        while n != last:
+            last = n
+            time.sleep(settle)
+            n = conn.in_waiting
+        if n == 0:
+            raise GMCError(f"No response to {command!r}")
+        return conn.read(n)
+
+    @staticmethod
+    def _wrap(command: str, params: bytes = b"") -> bytes:
+        """Build a ``<CMD[params]>>`` frame. Params are raw bytes per GQ-RFC1201."""
+        return b"<" + command.encode("ascii") + params + b">>"
+
     def get_version(self) -> str:
+        """Hardware model + firmware version as ASCII.
+
+        Length is firmware-dependent (14 bytes on the original GQ-RFC1201
+        spec, 15 on GMC-600+ Re.2.22, etc.), so we drain the whole response.
+        Cached after the first call.
         """
-        Get hardware model and firmware version.
-        
-        Returns:
-            14-character string with model and version info
+        if self._version is None:
+            response = self._drain_response(self._wrap("GETVER"))
+            self._version = response.decode("ascii", errors="ignore").strip("\x00 ")
+        return self._version
+
+    def _cpm_response_width(self) -> int:
+        """Return 4 for GMC-500/600/800 family, 2 for older GMC-280/300/320.
+
+        Cached after the first call. Detected from ``GETVER`` because the GETCPM
+        response width is firmware-family dependent and there is no command to
+        query it directly.
         """
-        response = self._send_command("GETVER")
-        return response.decode('ascii', errors='ignore').strip()
-    
+        if self._cpm_width is None:
+            version = self.get_version()
+            if version.startswith(("GMC-500", "GMC-600", "GMC-800")):
+                self._cpm_width = 4
+            else:
+                self._cpm_width = 2
+        return self._cpm_width
+
     def get_cpm(self) -> int:
+        """Current counts per minute.
+
+        Response width is 2 bytes on GMC-280/300/320 and 4 bytes on
+        GMC-500/600/800 (auto-detected from GETVER on first call).
         """
-        Get current counts per minute (CPM).
-        
-        Returns:
-            CPM value as integer
-        """
-        response = self._send_command("GETCPM")
-        if len(response) >= 2:
-            return struct.unpack('>H', response[:2])[0]
-        return 0
-    
+        width = self._cpm_response_width()
+        response = self._send(self._wrap("GETCPM"), width)
+        fmt = ">I" if width == 4 else ">H"
+        (cpm,) = struct.unpack(fmt, response)
+        return int(cpm)
+
     def get_battery_voltage(self) -> float:
+        """Battery voltage in volts.
+
+        GMC-280/300/320 return a single byte (value × 10 V). GMC-500/600 firmware
+        variants return a short ASCII string like ``b'4.3v\\x00'``; this method
+        handles either form.
         """
-        Get battery voltage.
-        
-        Returns:
-            Battery voltage in volts
-        """
-        response = self._send_command("GETVOLT")
-        if len(response) >= 1:
-            return response[0] / 10.0
-        return 0.0
-    
+        data = self._drain_response(self._wrap("GETVOLT"))
+        text = data.decode("ascii", errors="ignore").strip("\x00 \t\r\nvV")
+        try:
+            return float(text)
+        except ValueError:
+            return data[0] / 10.0
+
     def get_serial_number(self) -> str:
-        """
-        Get device serial number.
-        
-        Returns:
-            7-byte serial number as string
-        """
-        response = self._send_command("GETSERIAL")
-        return response.decode('ascii', errors='ignore').strip()
-    
-    def get_temperature(self) -> Optional[float]:
-        """
-        Get temperature reading.
-        
-        Returns:
-            Temperature in Celsius, None if not supported
+        """7-byte serial number, returned as a lowercase hex string."""
+        response = self._send(self._wrap("GETSERIAL"), 7)
+        return response.hex()
+
+    def get_temperature(self) -> float | None:
+        """Temperature in Celsius (GMC-320 Re.3.01+), or None if unsupported.
+
+        Response layout per GQ-RFC1201 section 24:
+            BYTE1 = integer part, BYTE2 = decimal part,
+            BYTE3 = sign (0 = positive, nonzero = negative),
+            BYTE4 = 0xAA terminator.
         """
         try:
-            response = self._send_command("GETTEMP")
-            if len(response) >= 4:
-                integer_part = response[0]
-                decimal_part = response[1]
-                negative_sign = response[2]
-                temp = integer_part + (decimal_part / 100.0)
-                return -temp if negative_sign != 0 else temp
-        except:
+            response = self._send(self._wrap("GETTEMP"), 4)
+        except GMCError:
             return None
-        return None
-    
-    def get_gyroscope(self) -> Optional[Tuple[int, int, int]]:
-        """
-        Get gyroscope data.
-        
-        Returns:
-            Tuple of (x, y, z) values, None if not supported
-        """
+        integer_part = response[0]
+        decimal_part = response[1]
+        negative = response[2] != 0
+        temp = integer_part + decimal_part / 10.0
+        return -temp if negative else temp
+
+    def get_gyroscope(self) -> tuple[int, int, int] | None:
+        """3-axis gyroscope reading (GMC-320 Re.3.01+), or None if unsupported."""
         try:
-            response = self._send_command("GETGYRO")
-            if len(response) >= 7:
-                x = struct.unpack('>H', response[0:2])[0]
-                y = struct.unpack('>H', response[2:4])[0]
-                z = struct.unpack('>H', response[4:6])[0]
-                return (x, y, z)
-        except:
+            response = self._send(self._wrap("GETGYRO"), 7)
+        except GMCError:
             return None
-        return None
-    
-    def get_datetime(self) -> Optional[datetime]:
-        """
-        Get device date and time.
-        
-        Returns:
-            datetime object, None if not supported
-        """
+        x, y, z = struct.unpack(">HHH", response[:6])
+        return (x, y, z)
+
+    def get_datetime(self) -> datetime | None:
+        """Device real-time clock (GMC-280/300 Re.3.00+), or None if unsupported."""
         try:
-            response = self._send_command("GETDATETIME")
-            if len(response) >= 7:
-                year = 2000 + response[0]
-                month = response[1]
-                day = response[2]
-                hour = response[3]
-                minute = response[4]
-                second = response[5]
-                return datetime(year, month, day, hour, minute, second)
-        except:
+            response = self._send(self._wrap("GETDATETIME"), 7)
+        except GMCError:
             return None
-        return None
-    
+        try:
+            return datetime(
+                2000 + response[0],
+                response[1],
+                response[2],
+                response[3],
+                response[4],
+                response[5],
+            )
+        except ValueError:
+            return None
+
     def set_datetime(self, dt: datetime) -> bool:
+        """Set device real-time clock (GMC-280/300 Re.3.00+).
+
+        Parameters are sent as 6 raw bytes (YY MM DD HH MM SS), as required by
+        the GQ-RFC1201 spec — *not* as ASCII hex digits.
         """
-        Set device date and time.
-        
-        Args:
-            dt: datetime object to set
-            
-        Returns:
-            True if successful
-        """
-        try:
-            year = dt.year - 2000
-            command = f"SETDATETIME{year:02x}{dt.month:02x}{dt.day:02x}{dt.hour:02x}{dt.minute:02x}{dt.second:02x}"
-            response = self._send_command(command)
-            return len(response) > 0 and response[-1] == 0xAA
-        except:
-            return False
-    
+        params = bytes(
+            [dt.year - 2000, dt.month, dt.day, dt.hour, dt.minute, dt.second]
+        )
+        response = self._send(self._wrap("SETDATETIME", params), 1)
+        return response[0] == _ACK
+
     def start_heartbeat(self) -> bool:
+        """Begin automatic CPS streaming (one packet per second).
+
+        Packet width depends on device family — detected here so the stream
+        reader doesn't have to round-trip GETVER mid-stream.
         """
-        Start heartbeat mode (automatic CPS reporting every second).
-        
-        Returns:
-            True if successful
-        """
-        try:
-            self._send_command("HEARTBEAT1")
-            self.heartbeat_active = True
-            return True
-        except:
-            return False
-    
+        self._cpm_response_width()  # populate cache before stream starts
+        conn = self._require_conn()
+        conn.reset_input_buffer()
+        self._write(self._wrap("HEARTBEAT1"))
+        self.heartbeat_active = True
+        return True
+
     def stop_heartbeat(self) -> bool:
+        """Stop the CPS stream and discard any residual streamed bytes."""
+        conn = self._require_conn()
+        self._write(self._wrap("HEARTBEAT0"))
+        self.heartbeat_active = False
+        # Drain any in-flight heartbeat packets so the next command sees a clean buffer.
+        time.sleep(0.2)
+        conn.reset_input_buffer()
+        return True
+
+    def read_heartbeat(self) -> int | None:
+        """Read one CPS sample from the stream, or None if no data is waiting.
+
+        Sample width matches the device's CPM width (4 bytes on GMC-500/600/800,
+        2 bytes on older models). The legacy 2-byte form reserves the top 2
+        bits, so we mask to 14 bits in that case.
         """
-        Stop heartbeat mode.
-        
-        Returns:
-            True if successful
-        """
-        try:
-            self._send_command("HEARTBEAT0")
-            self.heartbeat_active = False
-            return True
-        except:
-            return False
-    
-    def read_heartbeat(self) -> Optional[int]:
-        """
-        Read heartbeat data (counts per second).
-        
-        Returns:
-            CPS value, None if no data available
-        """
-        if not self.heartbeat_active or not self.serial_conn:
+        if not self.heartbeat_active:
             return None
-        
-        try:
-            if self.serial_conn.in_waiting >= 2:
-                data = self.serial_conn.read(2)
-                if len(data) == 2:
-                    # Only use lowest 14 bits for valid data
-                    cps = struct.unpack('>H', data)[0] & 0x3FFF
-                    return cps
-        except:
-            pass
-        return None
-    
+        width = self._cpm_response_width()
+        conn = self._require_conn()
+        if conn.in_waiting < width:
+            return None
+        data = conn.read(width)
+        if len(data) != width:
+            return None
+        if width == 4:
+            (raw,) = struct.unpack(">I", data)
+            return int(raw)
+        (raw,) = struct.unpack(">H", data)
+        return int(raw) & 0x3FFF
+
     def get_history_data(self, address: int, length: int) -> bytes:
+        """Read ``length`` bytes from flash starting at ``address``.
+
+        Address is 3 bytes (MSB first), length is 2 bytes (MSB first); both are
+        sent as raw bytes per GQ-RFC1201 section 6. ``length`` must be ≤ 4096.
         """
-        Request history data from flash memory.
-        
-        Args:
-            address: Starting address (0-based)
-            length: Number of bytes to read (max 4096)
-            
-        Returns:
-            Raw history data bytes
-        """
-        if length > 4096:
-            raise ValueError("Length cannot exceed 4096 bytes")
-        
-        # Convert address and length to hex bytes
-        a2 = (address >> 16) & 0xFF
-        a1 = (address >> 8) & 0xFF
-        a0 = address & 0xFF
-        l1 = (length >> 8) & 0xFF
-        l0 = length & 0xFF
-        
-        command = f"SPIR{a2:02x}{a1:02x}{a0:02x}{l1:02x}{l0:02x}"
-        return self._send_command(command)
-    
+        if length <= 0 or length > 4096:
+            raise ValueError("length must be in 1..4096")
+        if address < 0 or address > 0xFFFFFF:
+            raise ValueError("address must fit in 24 bits")
+        params = struct.pack(">I", address)[1:] + struct.pack(">H", length)
+        return self._send(self._wrap("SPIR", params), length)
+
     def get_config(self) -> bytes:
+        """Configuration block.
+
+        GQ-RFC1201 specifies 256 bytes; firmware on the GMC-500/600/800 family
+        returns 512. Drained dynamically so both work.
         """
-        Get configuration data.
-        
-        Returns:
-            256 bytes of configuration data
-        """
-        return self._send_command("GETCFG")
-    
+        return self._drain_response(self._wrap("GETCFG"), settle=0.2)
+
     def erase_config(self) -> bool:
-        """
-        Erase all configuration data.
-        
-        Returns:
-            True if successful
-        """
-        response = self._send_command("ECFG")
-        return len(response) > 0 and response[-1] == 0xAA
-    
+        """Erase all configuration data."""
+        return self._send(self._wrap("ECFG"), 1)[0] == _ACK
+
     def write_config(self, address: int, data: int) -> bool:
+        """Write a single byte to configuration memory.
+
+        Both address and data are sent as raw bytes (one each), per
+        GQ-RFC1201 section 9 — *not* as ASCII hex digits.
         """
-        Write single byte to configuration.
-        
-        Args:
-            address: Config address (0-255)
-            data: Data byte to write (0-255)
-            
-        Returns:
-            True if successful
-        """
-        command = f"WCFG{address:02x}{data:02x}"
-        response = self._send_command(command)
-        return len(response) > 0 and response[-1] == 0xAA
-    
+        if not 0 <= address <= 255:
+            raise ValueError("address must be 0..255")
+        if not 0 <= data <= 255:
+            raise ValueError("data must be 0..255")
+        params = bytes([address, data])
+        return self._send(self._wrap("WCFG", params), 1)[0] == _ACK
+
     def update_config(self) -> bool:
-        """
-        Reload/update configuration.
-        
-        Returns:
-            True if successful
-        """
-        response = self._send_command("CFGUPDATE")
-        return len(response) > 0 and response[-1] == 0xAA
-    
+        """Reload configuration (commit writes)."""
+        return self._send(self._wrap("CFGUPDATE"), 1)[0] == _ACK
+
     def send_key(self, key_num: int) -> bool:
-        """
-        Send software key press.
-        
-        Args:
-            key_num: Key number (0-3 for S1-S4)
-            
-        Returns:
-            True if successful
-        """
-        if key_num < 0 or key_num > 3:
-            raise ValueError("Key number must be 0-3")
-        
-        try:
-            self._send_command(f"KEY{key_num}")
-            return True
-        except:
-            return False
-    
+        """Simulate a software key press. ``key_num`` is 0..3 → S1..S4."""
+        if not 0 <= key_num <= 3:
+            raise ValueError("key_num must be 0..3")
+        # KEY accepts either the ASCII form (<KEY0>>, Re.2.11+) or a single
+        # raw byte parameter on older firmware. We use the ASCII form.
+        self._send(self._wrap(f"KEY{key_num}"), 0)
+        return True
+
     def power_off(self) -> bool:
-        """
-        Power off the device.
-        
-        Returns:
-            True if command sent successfully
-        """
-        try:
-            self._send_command("POWEROFF")
-            return True
-        except:
-            return False
-    
+        """Power the device off. No response is returned."""
+        self._send(self._wrap("POWEROFF"), 0)
+        return True
+
     def power_on(self) -> bool:
-        """
-        Power on the device.
-        
-        Returns:
-            True if command sent successfully
-        """
-        try:
-            self._send_command("POWERON")
-            return True
-        except:
-            return False
-    
+        """Power the device on. No response is returned."""
+        self._send(self._wrap("POWERON"), 0)
+        return True
+
     def reboot(self) -> bool:
+        """Reboot the device. No response is returned."""
+        self._send(self._wrap("REBOOT"), 0)
+        return True
+
+    def factory_reset(self, confirm: bool = False) -> bool:
+        """Restore factory defaults. Pass ``confirm=True`` to acknowledge.
+
+        Raises:
+            GMCError: if ``confirm`` is not True.
         """
-        Reboot the device.
-        
-        Returns:
-            True if command sent successfully
-        """
-        try:
-            self._send_command("REBOOT")
-            return True
-        except:
-            return False
-    
-    def factory_reset(self) -> bool:
-        """
-        Reset device to factory defaults.
-        
-        Returns:
-            True if successful
-        """
-        response = self._send_command("FACTORYRESET")
-        return len(response) > 0 and response[-1] == 0xAA
+        if not confirm:
+            raise GMCError(
+                "factory_reset() is destructive; pass confirm=True to proceed"
+            )
+        return self._send(self._wrap("FACTORYRESET"), 1)[0] == _ACK
