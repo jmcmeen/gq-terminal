@@ -65,14 +65,10 @@ jobs:
           enable-cache: true
 
       - name: Build sdist + wheel
-        run: |
-          uv tool install build
-          uv tool run build
+        run: uv build
 
       - name: Verify metadata
-        run: |
-          uv tool install twine
-          uv tool run twine check dist/*
+        run: uvx twine check dist/*
 
       - uses: actions/upload-artifact@v4
         with:
