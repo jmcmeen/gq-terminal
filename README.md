@@ -1,5 +1,11 @@
 # GQ Terminal
 
+[![CI](https://github.com/jmcmeen/gq-terminal/actions/workflows/ci.yml/badge.svg)](https://github.com/jmcmeen/gq-terminal/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/gq-terminal.svg)](https://pypi.org/project/gq-terminal/)
+[![Python versions](https://img.shields.io/pypi/pyversions/gq-terminal.svg)](https://pypi.org/project/gq-terminal/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/1044659541.svg)](https://doi.org/10.5281/zenodo.20129915)
+
 A Python library and command-line interface for [GQ GMC geiger counters](https://www.gqelectronicsllc.com/),
 implementing the [GQ-RFC1201 protocol](https://www.gqelectronicsllc.com/download/GQ-RFC1201.txt).
 
@@ -136,9 +142,27 @@ pytest
 
 ## Citing
 
-If you use this software in research, please cite it. A `CITATION.cff` is
-included in the repository, and tagged releases are archived on Zenodo with
-DOIs — see the badge on the GitHub repository.
+If you use this software in research, please cite it. The concept DOI
+[10.5281/zenodo.20129915](https://doi.org/10.5281/zenodo.20129915) always
+resolves to the latest release; each tagged release also gets its own
+version-specific DOI on the same Zenodo page.
+
+BibTeX:
+
+```bibtex
+@software{mcmeen_gq_terminal,
+  author       = {McMeen, John},
+  title        = {GQ Terminal: a Python interface for GQ GMC geiger counters},
+  year         = {2026},
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.20129915},
+  url          = {https://github.com/jmcmeen/gq-terminal},
+  orcid        = {0009-0003-8141-567X}
+}
+```
+
+A machine-readable [`CITATION.cff`](CITATION.cff) is included in the repository.
+GitHub renders a "Cite this repository" button from it.
 
 ## License
 
