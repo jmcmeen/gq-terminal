@@ -7,6 +7,30 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.2.0]
 
 ### Added
+- `set-time` CLI command to sync the device clock to the computer (or a given
+  `--time`), wrapping the existing `set_datetime()`.
+- `raw` CLI command plus `GMCInterface.send_raw()` / `wrap_command()` for
+  sending an arbitrary protocol frame and dumping the response — a hands-on way
+  to exercise GQ-RFC1201.
+- Dose-rate support. New `Calibration` class and `parse_calibration()` helper,
+  plus `GMCInterface.get_calibration()`, `get_dose_usv()`, and `get_dose_mr()`.
+  Dose rate is *derived* from CPM via a tube-specific calibration (read from
+  the device config by default, or supplied via the `calibration=` constructor
+  argument). `info`, `monitor`, and `tui` show µSv/h and mR/h when a
+  calibration is available; the new `--usv-per-cpm` CLI option overrides it.
+  The config offsets used to read the stored calibration are reverse-engineered
+  (verify with `tools/diagnose.py`), and the output is explicitly flagged as a
+  derived, non-certified value.
+- Interactive terminal dashboard: `gq-terminal tui`, a live full-screen
+  monitor built on [Textual](https://github.com/Textualize/textual). Shows
+  large CPS and CPM readouts, a dose-rate line, a sparkline graph over time, a
+  battery line, device temperature/clock/gyroscope (where supported), and
+  running statistics. The layout reflows (scrolls on short terminals, graph
+  grows on tall ones); the update interval is adjustable at runtime with
+  `+` / `-`, the graph toggles between CPS and CPM with `g`, and initial junk
+  samples are discarded on connect. Textual is an optional dependency — install
+  it via the new `tui` extra (`pip install 'gq-terminal[tui]'`); the command
+  prints an install hint if it's missing.
 - Serial-port auto-discovery. New public functions `discover_ports()` (lists
   serial ports, flagging those whose USB VID/PID matches a bridge chip known
   to ship on GMC counters) and `find_gmc_port()` (probes candidates with

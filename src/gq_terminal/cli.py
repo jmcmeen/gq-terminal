@@ -10,7 +10,13 @@ from typing import Any, TypeVar
 
 import click
 
-from .interface import GMCError, GMCInterface, discover_ports, find_gmc_port
+from .interface import (
+    Calibration,
+    GMCError,
+    GMCInterface,
+    discover_ports,
+    find_gmc_port,
+)
 
 HIGH_CPS_THRESHOLD = 100
 HIGH_CPS_LOG_THRESHOLD = 200
@@ -75,14 +81,57 @@ def _resolve_port(port: str | None, baudrate: int, timeout: float) -> str:
     sys.exit(1)
 
 
-def _open(port: str | None, baudrate: int, timeout: float) -> GMCInterface:
+def _open(
+    port: str | None,
+    baudrate: int,
+    timeout: float,
+    calibration: Calibration | None = None,
+) -> GMCInterface:
     port = _resolve_port(port, baudrate, timeout)
     click.echo(f"Connecting to GMC on {port}...")
-    gmc = GMCInterface(port, baudrate, timeout)
+    gmc = GMCInterface(port, baudrate, timeout, calibration=calibration)
     if not gmc.connect():
         click.echo(click.style(f"Failed to connect to {port}", fg="red"), err=True)
         sys.exit(1)
     return gmc
+
+
+def _calibration_from_opt(usv_per_cpm: float | None) -> Calibration | None:
+    return Calibration.from_factor(usv_per_cpm) if usv_per_cpm else None
+
+
+def usv_per_cpm_option(func: F) -> F:
+    """Decorator adding --usv-per-cpm to a dose-aware command."""
+    return click.option(
+        "--usv-per-cpm",
+        type=float,
+        default=None,
+        help=(
+            "Override calibration: µSv/h per CPM (e.g. 0.0065). "
+            "Omit to use the device's stored calibration."
+        ),
+    )(func)
+
+
+def _dose_lines(gmc: GMCInterface, cpm: int, overridden: bool) -> list[str]:
+    """Render dose-rate lines for ``cpm``, or a hint if no calibration exists."""
+    try:
+        cal = gmc.get_calibration()
+    except GMCError:
+        cal = None
+    if cal is None:
+        return [
+            "Dose rate: n/a (no calibration found; pass --usv-per-cpm to supply one)"
+        ]
+    usv = cal.cpm_to_usv(cpm)
+    source = "user-supplied" if overridden else "device"
+    return [
+        f"Dose rate: {usv:.3f} µSv/h  ({usv / 10.0:.4f} mR/h)",
+        click.style(
+            f"  (from {source} calibration — derived value, not a certified dose)",
+            fg="yellow",
+        ),
+    ]
 
 
 def _battery_line(voltage: float) -> str:
@@ -115,10 +164,17 @@ def ports() -> None:
 
 @main.command()
 @common_options
+@usv_per_cpm_option
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed device information")
-def info(port: str | None, baudrate: int, timeout: float, verbose: bool) -> None:
+def info(
+    port: str | None,
+    baudrate: int,
+    timeout: float,
+    usv_per_cpm: float | None,
+    verbose: bool,
+) -> None:
     """Get device information and current readings."""
-    gmc = _open(port, baudrate, timeout)
+    gmc = _open(port, baudrate, timeout, _calibration_from_opt(usv_per_cpm))
     try:
         click.echo(click.style("Connected", fg="green"))
         version = gmc.get_version()
@@ -131,6 +187,8 @@ def info(port: str | None, baudrate: int, timeout: float, verbose: bool) -> None
         click.echo(f"Serial Number: {serial_num}")
         click.echo(_battery_line(voltage))
         click.echo(f"Current CPM: {cpm}")
+        for line in _dose_lines(gmc, cpm, usv_per_cpm is not None):
+            click.echo(line)
 
         if voltage < LOW_BATTERY_VOLTS:
             click.echo(click.style("Low battery warning", fg="yellow"))
@@ -157,6 +215,7 @@ def info(port: str | None, baudrate: int, timeout: float, verbose: bool) -> None
 
 @main.command()
 @common_options
+@usv_per_cpm_option
 @click.option(
     "--duration", "-d", default=0, help="Monitoring duration in seconds (0 = infinite)"
 )
@@ -168,13 +227,18 @@ def monitor(
     port: str | None,
     baudrate: int,
     timeout: float,
+    usv_per_cpm: float | None,
     duration: int,
     interval: float,
     quiet: bool,
 ) -> None:
     """Real-time radiation monitoring via heartbeat mode."""
-    gmc = _open(port, baudrate, timeout)
+    gmc = _open(port, baudrate, timeout, _calibration_from_opt(usv_per_cpm))
     try:
+        try:
+            calibration = gmc.get_calibration()
+        except GMCError:
+            calibration = None
         if not quiet:
             click.echo(f"Connected to {gmc.get_version()}")
             voltage = gmc.get_battery_voltage()
@@ -183,15 +247,25 @@ def monitor(
                 click.echo(
                     click.style("Warning: low battery may affect readings", fg="yellow")
                 )
+            if calibration is not None:
+                src = "user-supplied" if usv_per_cpm is not None else "device"
+                click.echo(
+                    click.style(
+                        f"Dose rate shown from {src} calibration "
+                        "(derived, not a certified dose)",
+                        fg="yellow",
+                    )
+                )
             click.echo("\nStarting real-time monitoring (Ctrl+C to stop)\n")
             click.echo(
                 "Time".ljust(12)
                 + "CPS".rjust(6)
                 + "CPM".rjust(6)
+                + ("µSv/h".rjust(10) if calibration else "")
                 + "Battery".rjust(10)
                 + "  Status"
             )
-            click.echo("-" * 50)
+            click.echo("-" * 60)
 
         gmc.start_heartbeat()
 
@@ -237,9 +311,15 @@ def monitor(
                             status.append("HIGH")
                         if voltage and voltage < LOW_BATTERY_VOLTS:
                             status.append("LOW-BAT")
+                        dose = (
+                            f"{calibration.cpm_to_usv(cpm):>10.3f}"
+                            if calibration
+                            else ""
+                        )
                         click.echo(
                             f"{datetime.now().strftime('%H:%M:%S'):<12}"
-                            f"{cps:>6}{cpm:>6}{voltage:>8.1f}V  " + " ".join(status)
+                            f"{cps:>6}{cpm:>6}{dose}{voltage:>8.1f}V  "
+                            + " ".join(status)
                         )
 
                 time.sleep(interval)
@@ -260,6 +340,47 @@ def monitor(
             click.echo(f"Max CPS: {max_cps}")
             click.echo(f"Min CPS: {min_cps}")
             click.echo(f"Total counts: {total_counts}")
+    except GMCError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+    finally:
+        gmc.disconnect()
+
+
+@main.command()
+@common_options
+@usv_per_cpm_option
+@click.option(
+    "--interval",
+    "-i",
+    default=1.0,
+    show_default=True,
+    help="Initial display update interval in seconds (adjustable in-app)",
+)
+def tui(
+    port: str | None,
+    baudrate: int,
+    timeout: float,
+    usv_per_cpm: float | None,
+    interval: float,
+) -> None:
+    """Launch an interactive terminal dashboard (requires the 'tui' extra)."""
+    try:
+        from .tui import run_tui
+    except ImportError:
+        click.echo(
+            click.style(
+                "The TUI requires Textual. Install it with: "
+                "pip install 'gq-terminal[tui]'",
+                fg="red",
+            ),
+            err=True,
+        )
+        sys.exit(1)
+
+    gmc = _open(port, baudrate, timeout, _calibration_from_opt(usv_per_cpm))
+    try:
+        run_tui(gmc, interval)
     except GMCError as e:
         click.echo(click.style(f"Error: {e}", fg="red"), err=True)
         sys.exit(1)
@@ -444,6 +565,84 @@ def key(port: str | None, baudrate: int, timeout: float, key_num: int) -> None:
     try:
         gmc.send_key(key_num)
         click.echo(click.style(f"Sent key S{key_num + 1}", fg="green"))
+    except GMCError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+    finally:
+        gmc.disconnect()
+
+
+@main.command("set-time")
+@common_options
+@click.option(
+    "--time",
+    "when",
+    default=None,
+    help="ISO timestamp to set (e.g. 2026-06-02T14:30:00). Default: computer's now.",
+)
+def set_time(port: str | None, baudrate: int, timeout: float, when: str | None) -> None:
+    """Sync the device clock to the computer (or a given --time)."""
+    try:
+        dt = datetime.fromisoformat(when) if when else datetime.now()
+    except ValueError as e:
+        click.echo(click.style(f"Invalid --time: {e}", fg="red"), err=True)
+        sys.exit(1)
+    gmc = _open(port, baudrate, timeout)
+    try:
+        if gmc.set_datetime(dt):
+            click.echo(
+                click.style(f"Device clock set to {dt:%Y-%m-%d %H:%M:%S}", fg="green")
+            )
+        else:
+            click.echo(
+                click.style("Device did not acknowledge the time set", fg="red"),
+                err=True,
+            )
+            sys.exit(1)
+    except GMCError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+    finally:
+        gmc.disconnect()
+
+
+@main.command()
+@common_options
+@click.argument("command")
+@click.option(
+    "--read",
+    "-n",
+    "read_bytes",
+    type=int,
+    default=None,
+    help="Read exactly N bytes (default: drain whatever the device returns)",
+)
+def raw(
+    port: str | None,
+    baudrate: int,
+    timeout: float,
+    command: str,
+    read_bytes: int | None,
+) -> None:
+    """Send a raw protocol command and print the response bytes.
+
+    COMMAND may be a bare name or a full frame, e.g. 'GETVER' or '<GETVER>>'.
+    For exercising GQ-RFC1201 directly; most tasks have a dedicated subcommand.
+    """
+    frame = (
+        command.encode("ascii", "ignore")
+        if command.startswith("<")
+        else GMCInterface.wrap_command(command)
+    )
+    gmc = _open(port, baudrate, timeout)
+    try:
+        resp = gmc.send_raw(frame, read_bytes)
+        click.echo(f"Sent: {frame!r}")
+        if not resp:
+            click.echo("Response: (none)")
+        else:
+            click.echo(f"Response ({len(resp)} bytes): {resp.hex(' ')}")
+            click.echo(f"ASCII: {resp.decode('ascii', errors='replace')!r}")
     except GMCError as e:
         click.echo(click.style(f"Error: {e}", fg="red"), err=True)
         sys.exit(1)

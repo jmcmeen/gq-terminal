@@ -15,7 +15,17 @@ def test_version_flag() -> None:
 def test_help_lists_subcommands() -> None:
     result = CliRunner().invoke(main, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("info", "monitor", "log", "history", "key", "config"):
+    for cmd in (
+        "info",
+        "monitor",
+        "tui",
+        "log",
+        "history",
+        "key",
+        "set-time",
+        "raw",
+        "config",
+    ):
         assert cmd in result.output
 
 

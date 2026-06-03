@@ -3,12 +3,14 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .interface import (
+    Calibration,
     GMCError,
     GMCInterface,
     GMCNotConnectedError,
     SerialPortInfo,
     discover_ports,
     find_gmc_port,
+    parse_calibration,
 )
 
 try:
@@ -21,7 +23,9 @@ __all__ = [
     "GMCError",
     "GMCNotConnectedError",
     "SerialPortInfo",
+    "Calibration",
     "discover_ports",
     "find_gmc_port",
+    "parse_calibration",
     "__version__",
 ]

@@ -34,14 +34,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+tui = [
+    "textual>=0.60",
+]
 dev = [
+    "gq-terminal[tui]",
     "pytest>=7.0",
+    "pytest-asyncio",
     "pytest-cov",
     "black",
     "ruff",
     "mypy",
     "types-pyserial",
     "build",
+    "twine",
 ]
 
 [project.urls]
@@ -62,6 +68,8 @@ include = [
     "tests",
     "examples",
     "README.md",
+    "DISCLAIMERS.md",
+    "CONTRIBUTING.md",
     "LICENSE",
     "CHANGELOG.md",
     "CITATION.cff",
@@ -84,6 +92,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["gq_terminal"]

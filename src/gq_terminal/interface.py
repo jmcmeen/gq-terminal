@@ -10,6 +10,7 @@ firmware revisions noted in the protocol document.
 """
 
 import logging
+import math
 import struct
 import time
 from datetime import datetime
@@ -46,22 +47,125 @@ class GMCNotConnectedError(GMCError):
     """Raised when an operation is attempted on a disconnected device."""
 
 
+# 1 mR = 10 µSv (1 R = 0.01 Sv): a fixed unit conversion, not a calibration.
+_USV_PER_MR = 10.0
+
+# Plausible range for a tube's calibration factor (µSv/h per CPM). The common
+# default for GMC pancake/tube setups is ~0.0065. Used only to reject a
+# mis-parsed config (e.g. wrong float byte order yields absurd values).
+_PLAUSIBLE_FACTOR = (1e-5, 1e-1)
+
+
+class Calibration:
+    """CPM → dose-rate calibration for a GMC tube.
+
+    Holds calibration points as ``(cpm, µSv/h)`` pairs and converts a CPM
+    reading to a dose rate by piecewise-linear interpolation through the origin
+    (extrapolating past the last point with its final slope).
+
+    A dose rate is only as good as this calibration, which is tube-specific.
+    This is **not** a certified-dose conversion — see the README disclaimer.
+    """
+
+    def __init__(self, points: list[tuple[float, float]]):
+        pts = sorted((float(c), float(u)) for c, u in points if c > 0)
+        if not pts:
+            raise ValueError("calibration needs at least one point with cpm > 0")
+        self.points = pts
+
+    @classmethod
+    def from_factor(cls, usv_per_cpm: float) -> "Calibration":
+        """Build a linear calibration of ``usv_per_cpm`` µSv/h per CPM."""
+        if usv_per_cpm <= 0:
+            raise ValueError("usv_per_cpm must be positive")
+        return cls([(1.0, usv_per_cpm)])
+
+    def cpm_to_usv(self, cpm: float) -> float:
+        """Convert a CPM reading to µSv/h using this calibration."""
+        nodes = [(0.0, 0.0), *self.points]
+        for (c0, u0), (c1, u1) in zip(nodes, nodes[1:], strict=False):
+            if cpm <= c1:
+                if c1 == c0:
+                    return u0
+                return u0 + (u1 - u0) * (cpm - c0) / (c1 - c0)
+        (c0, u0), (c1, u1) = nodes[-2], nodes[-1]
+        slope = (u1 - u0) / (c1 - c0) if c1 != c0 else 0.0
+        return u1 + (cpm - c1) * slope
+
+    def cpm_to_mr(self, cpm: float) -> float:
+        """Convert a CPM reading to mR/h using this calibration."""
+        return self.cpm_to_usv(cpm) / _USV_PER_MR
+
+
+# Calibration table location within the GETCFG block: three points, each a
+# 2-byte big-endian CPM followed by a 4-byte float µSv/h. GQ-RFC1201 does not
+# document the config layout, so these offsets are reverse-engineered and have
+# NOT been verified against the hardware this project tests against — confirm
+# with tools/diagnose.py before relying on parsed values. The float byte order
+# also varies between firmwares, so parse_calibration tries both.
+_CAL_POINT_OFFSETS = (8, 14, 20)
+
+
+def _extract_calibration(config: bytes, order: str) -> list[tuple[float, float]]:
+    points: list[tuple[float, float]] = []
+    lo, hi = _PLAUSIBLE_FACTOR
+    for off in _CAL_POINT_OFFSETS:
+        if off + 6 > len(config):
+            break
+        cpm = int.from_bytes(config[off : off + 2], "big")
+        (usv,) = struct.unpack(f"{order}f", config[off + 2 : off + 6])
+        if cpm > 0 and usv > 0 and math.isfinite(usv) and lo <= usv / cpm <= hi:
+            points.append((float(cpm), float(usv)))
+    return points
+
+
+def parse_calibration(
+    config: bytes, float_order: str | None = None
+) -> Calibration | None:
+    """Parse CPM→µSv/h calibration points out of a GETCFG block.
+
+    Returns ``None`` if the config is too short or no byte order yields a
+    physically plausible calibration. ``float_order`` forces ``'>'`` (big) or
+    ``'<'`` (little); by default both are tried and the one yielding more
+    plausible points wins. See the offset caveat above — verify against the
+    device before trusting the result.
+    """
+    orders = (float_order,) if float_order else (">", "<")
+    best: list[tuple[float, float]] = []
+    for order in orders:
+        points = _extract_calibration(config, order)
+        if len(points) > len(best):
+            best = points
+    return Calibration(best) if best else None
+
+
 class GMCInterface:
     """Interface for a GQ GMC geiger counter over a serial connection."""
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 2.0):
+    def __init__(
+        self,
+        port: str,
+        baudrate: int = 115200,
+        timeout: float = 2.0,
+        calibration: "Calibration | None" = None,
+    ):
         """
         Args:
             port: Serial port (e.g., ``'COM3'`` on Windows,
                 ``'/dev/ttyUSB0'`` on Linux).
             baudrate: 115200 for GMC-600 / current firmware; 57600 for older GMC-300.
             timeout: Per-read timeout in seconds.
+            calibration: Explicit CPM→dose calibration. If given, it overrides
+                the one read from the device config. See :meth:`get_calibration`.
         """
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.serial_conn: serial.Serial | None = None
         self.heartbeat_active = False
+        self._calibration_override = calibration
+        self._device_calibration: Calibration | None = None
+        self._device_calibration_read = False
         # GMC-500/600/800 family returns CPM and heartbeat CPS as 4 bytes;
         # the older GMC-280/300/320 family returns 2. Detected lazily from GETVER.
         self._cpm_width: int | None = None
@@ -199,6 +303,38 @@ class GMCInterface:
         fmt = ">I" if width == 4 else ">H"
         (cpm,) = struct.unpack(fmt, response)
         return int(cpm)
+
+    def get_calibration(self) -> "Calibration | None":
+        """Return the active CPM→dose calibration, or None if unavailable.
+
+        Uses the explicit calibration passed to the constructor if given;
+        otherwise parses it from the device config (read once and cached). The
+        parsed config offsets are reverse-engineered — see
+        :func:`parse_calibration`. Derived dose rates depend entirely on this
+        calibration; this library makes no accuracy guarantee (see README).
+        """
+        if self._calibration_override is not None:
+            return self._calibration_override
+        if not self._device_calibration_read:
+            self._device_calibration = parse_calibration(self.get_config())
+            self._device_calibration_read = True
+        return self._device_calibration
+
+    def get_dose_usv(self) -> float | None:
+        """Current dose rate in µSv/h, or None if no calibration is available.
+
+        Reads CPM and converts it with :meth:`get_calibration`. The value is
+        derived, not measured — only as good as the calibration.
+        """
+        cal = self.get_calibration()
+        if cal is None:
+            return None
+        return cal.cpm_to_usv(self.get_cpm())
+
+    def get_dose_mr(self) -> float | None:
+        """Current dose rate in mR/h, or None if no calibration is available."""
+        usv = self.get_dose_usv()
+        return None if usv is None else usv / _USV_PER_MR
 
     def get_battery_voltage(self) -> float:
         """Battery voltage in volts.
@@ -398,6 +534,28 @@ class GMCInterface:
                 "factory_reset() is destructive; pass confirm=True to proceed"
             )
         return self._send(self._wrap("FACTORYRESET"), 1)[0] == _ACK
+
+    @staticmethod
+    def wrap_command(command: str, params: bytes = b"") -> bytes:
+        """Build a ``<CMD[params]>>`` protocol frame (params are raw bytes)."""
+        return GMCInterface._wrap(command, params)
+
+    def send_raw(self, command: bytes, read_bytes: int | None = None) -> bytes:
+        """Send a raw command frame and return the response (diagnostic use).
+
+        ``command`` must include the ``<...>>`` framing (see
+        :meth:`wrap_command`). If ``read_bytes`` is given, read exactly that
+        many bytes; otherwise drain whatever the device sends, returning ``b""``
+        if it stays silent (some commands, e.g. ``KEY``, don't reply). Intended
+        for exercising the protocol manually — most callers want the typed
+        methods, which parse the response.
+        """
+        if read_bytes is not None:
+            return self._send(command, read_bytes)
+        try:
+            return self._drain_response(command)
+        except GMCError:
+            return b""
 
 
 class SerialPortInfo(NamedTuple):

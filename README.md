@@ -6,30 +6,18 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/1044659541.svg)](https://doi.org/10.5281/zenodo.20129915)
 
-A Python library and command-line interface for [GQ GMC geiger counters](https://www.gqelectronicsllc.com/),
-implementing the [GQ-RFC1201 protocol](https://www.gqelectronicsllc.com/download/GQ-RFC1201.txt).
+A Python library and command-line interface for [GQ GMC geiger
+counters](https://www.gqelectronicsllc.com/), implementing the [GQ-RFC1201
+protocol](https://www.gqelectronicsllc.com/download/GQ-RFC1201.txt). GQ
+publishes the protocol and
+[encourages third-party software](https://www.gqelectronicsllc.com/comersus/store/download.asp).
 
-> **⚠️  Not a certified instrument.** GQ GMC counters are hobbyist devices
-> and this library is unaffiliated with GQ Electronics. **Do not use values
-> from this software for safety-, regulatory-, or medical-decision-making.**
-> Counts and rates depend on calibration, geometry, isotope, and instrument
-> health — verifying any of that is the user's responsibility. The MIT
-> license disclaims all warranty; the same applies to readings.
-
-> **🔬 Hardware coverage.** The only configuration verified end-to-end against
-> a physical device is **GMC-600+ firmware Re.2.22**. The GMC-280, GMC-300,
-> GMC-320, GMC-500 series, and other GMC-600 firmware revisions *should*
-> work — the library auto-detects the family and adjusts the protocol
-> accordingly — but those code paths are exercised only by the test suite,
-> not against real hardware. If you have one of these and it works (or
-> doesn't), please open an issue with the output of `python tools/diagnose.py`.
-
-> **📡 Protocol is a moving target.** GQ Electronics ships firmware revisions
-> that diverge from the [GQ-RFC1201](https://www.gqelectronicsllc.com/download/GQ-RFC1201.txt)
-> spec without updating the document (we know of at least: 15-byte GETVER on
-> Re.2.22, 512-byte GETCFG on 500/600/800-series, 4-byte CPM on the same).
-> If your device returns unexpected data, run `python tools/diagnose.py
-> --port <port>` and attach the output to a bug report.
+> **⚠️  Not a certified instrument.** GQ GMC counters are hobbyist devices and
+> this library is unaffiliated with GQ Electronics. **Do not use values from
+> this software for safety-, regulatory-, or medical-decision-making.** The MIT
+> license disclaims all warranty; the same applies to readings. See
+> [DISCLAIMERS.md](DISCLAIMERS.md) for the full safety, hardware-coverage, and
+> protocol-compatibility notes.
 
 ## Installation
 
@@ -37,9 +25,16 @@ implementing the [GQ-RFC1201 protocol](https://www.gqelectronicsllc.com/download
 pip install gq-terminal
 ```
 
+For the interactive terminal dashboard, install the optional `tui` extra
+(pulls in [Textual](https://github.com/Textualize/textual)):
+
+```bash
+pip install 'gq-terminal[tui]'
+```
+
 ## Quick start
 
-### Python API
+Talk to a counter from Python:
 
 ```python
 from gq_terminal import GMCInterface
@@ -58,10 +53,21 @@ with GMCInterface('/dev/ttyUSB0', baudrate=115200) as gmc:
     gmc.stop_heartbeat()
 ```
 
-The context manager raises `GMCError` on connection failure. Outside a
-`with` block, call `gmc.connect()` and check the boolean return.
+The context manager raises `GMCError` on connection failure; outside a `with`
+block, call `gmc.connect()` and check the boolean return.
 
-### Command line
+Or from the shell:
+
+```bash
+gq-terminal info --port /dev/ttyUSB0      # device info + current readings
+gq-terminal monitor --port /dev/ttyUSB0   # live readings in the terminal
+gq-terminal tui --port /dev/ttyUSB0       # interactive dashboard (needs the 'tui' extra)
+```
+
+`--port` is optional — omit it to auto-detect (see [Port discovery](#port-discovery)).
+The full set of subcommands is below.
+
+## Command line
 
 ```bash
 gq-terminal ports                     # list serial ports; likely-GMC ones flagged
@@ -70,27 +76,82 @@ gq-terminal info --port /dev/ttyUSB0
 gq-terminal info --port /dev/ttyUSB0 --verbose
 
 gq-terminal monitor --port /dev/ttyUSB0 --duration 60
+gq-terminal tui     --port /dev/ttyUSB0     # interactive dashboard (needs the 'tui' extra)
 gq-terminal log     --port /dev/ttyUSB0 --interval 60 --output radiation.csv
 
 gq-terminal config read --port /dev/ttyUSB0
 gq-terminal history --port /dev/ttyUSB0 --address 0 --length 1024
 
+gq-terminal set-time --port /dev/ttyUSB0          # sync device clock to the computer
+gq-terminal raw 'GETVER' --port /dev/ttyUSB0      # send a raw protocol command
+
 gq-terminal --help
 gq-terminal monitor --help
 ```
 
-`--port` is optional: omit it and the device is auto-detected (the first
-serial port whose USB chip matches a GMC counter and that answers a `GETVER`
-probe). If detection fails, the discovered ports are listed so you can pass
-`--port` explicitly.
+You can also invoke the CLI as a module: `python -m gq_terminal info ...`.
+
+## Terminal dashboard
+
+`gq-terminal tui` opens a live, full-screen dashboard built on
+[Textual](https://github.com/Textualize/textual) — large CPS, CPM, µSv/h, and
+mR/h readouts, a sparkline graph over time, battery, device
+temperature/clock/gyroscope (where supported), and running statistics
+(sample count, average/max/min CPS, total counts). The layout reflows: it
+scrolls on a short terminal and the graph grows to fill a tall one. Keys: the
+update interval is adjustable with `+` / `-`, the graph toggles between CPS and
+CPM with `g`, `?` opens a glossary, `a` an about box, and `q` quits. It
+requires the optional `tui` extra (`pip install 'gq-terminal[tui]'`); without
+it the command prints an install hint and exits.
+
+The dashboard is for live viewing; for durable, long-running capture use
+`gq-terminal log`, which streams readings to a CSV file.
+
+```bash
+gq-terminal tui                       # auto-detect the port
+gq-terminal tui --port /dev/ttyUSB0 --interval 0.5
+gq-terminal tui --usv-per-cpm 0.0065  # supply a calibration for the dose readouts
+```
+
+## Dose rate (µSv/h, mR/h)
+
+The protocol has no "read dose rate" command — the counter derives µSv/h from
+CPM using a tube-specific **calibration**. `gq-terminal` mirrors this: `info`,
+`monitor`, and `tui` show µSv/h and mR/h **only when a calibration is
+available**. By default it reads the calibration stored on the device; pass
+`--usv-per-cpm` (µSv/h per CPM, e.g. `0.0065`) to override it. In Python:
+
+```python
+from gq_terminal import GMCInterface, Calibration
+
+# Use the device's stored calibration:
+with GMCInterface("/dev/ttyUSB0") as gmc:
+    print(gmc.get_dose_usv())   # µSv/h, or None if no calibration
+    print(gmc.get_dose_mr())    # mR/h
+
+# Or supply your own calibration explicitly:
+with GMCInterface("/dev/ttyUSB0", calibration=Calibration.from_factor(0.0065)) as gmc:
+    print(gmc.get_dose_usv())
+```
+
+> **⚠️  Dose rates are derived, not measured.** They depend entirely on the
+> calibration and the tube, and the device-config offsets used to read the
+> stored calibration are reverse-engineered (verify with `tools/diagnose.py`
+> against your counter's on-screen calibration menu). This is **not** a
+> certified dose — see the safety disclaimer at the top.
+
+## Port discovery
+
+`--port` is optional on every command. Omit it and the device is auto-detected:
+the first serial port whose USB chip matches a GMC counter and that answers a
+`GETVER` probe. If detection fails, the discovered ports are listed so you can
+pass `--port` explicitly, and `gq-terminal ports` lists everything it sees.
 
 ```bash
 gq-terminal info                      # auto-detect the port
 ```
 
-You can also invoke the CLI as a module: `python -m gq_terminal info ...`.
-
-In Python, the same discovery is available via `discover_ports()` and
+The same discovery is available in Python via `discover_ports()` and
 `find_gmc_port()`:
 
 ```python
@@ -109,11 +170,13 @@ Implements all 26 commands defined by GQ-RFC1201:
 | Category | Methods |
 | --- | --- |
 | Basic | `get_version`, `get_cpm`, `get_battery_voltage`, `get_serial_number` |
+| Dose rate (derived) | `get_calibration`, `get_dose_usv`, `get_dose_mr` (+ `Calibration`, `parse_calibration`) |
 | Real-time | `start_heartbeat`, `stop_heartbeat`, `read_heartbeat` |
 | Environment | `get_temperature`, `get_gyroscope` (GMC-320 Re.3.01+) |
 | Real-time clock | `get_datetime`, `set_datetime` (GMC-280/300 Re.3.00+) |
 | Memory | `get_history_data`, `get_config`, `write_config`, `erase_config`, `update_config` |
 | Device control | `send_key`, `power_off`, `power_on`, `reboot`, `factory_reset` |
+| Diagnostics | `send_raw`, `wrap_command` (exercise the protocol directly) |
 
 ## Serial configuration
 
@@ -166,9 +229,12 @@ The test suite uses a fake serial backend, so no hardware is required.
 If you don't have `uv` and don't want it, plain pip works too:
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,tui]"
 pytest
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions (protocol invariants,
+testing the wire bytes, style) before opening a PR.
 
 ## Citing
 

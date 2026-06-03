@@ -76,6 +76,28 @@ def test_get_cpm_modern_4byte_no_leftover_bytes(gmc: GMCInterface, fake_serial) 
     assert fake_serial.in_waiting == 0, "stale bytes would corrupt the next command"
 
 
+def test_send_raw_drains_response(gmc: GMCInterface, fake_serial) -> None:
+    fake_serial.add_handler(b"<GETVER>>", b"GMC-600+Re 2.22")
+    assert gmc.send_raw(b"<GETVER>>") == b"GMC-600+Re 2.22"
+
+
+def test_send_raw_fixed_length(gmc: GMCInterface, fake_serial) -> None:
+    fake_serial.add_handler(b"<GETSERIAL>>", bytes.fromhex("00112233445566"))
+    assert gmc.send_raw(b"<GETSERIAL>>", read_bytes=7) == bytes.fromhex(
+        "00112233445566"
+    )
+
+
+def test_send_raw_returns_empty_on_no_response(gmc: GMCInterface, fake_serial) -> None:
+    # KEY-style commands produce no reply; send_raw should return b"" not raise.
+    assert gmc.send_raw(b"<KEY0>>") == b""
+
+
+def test_wrap_command_builds_frame() -> None:
+    assert GMCInterface.wrap_command("GETVER") == b"<GETVER>>"
+    assert GMCInterface.wrap_command("WCFG", bytes([1, 2])) == b"<WCFG\x01\x02>>"
+
+
 def test_get_battery_voltage_byte_form(gmc: GMCInterface, fake_serial) -> None:
     fake_serial.add_handler(b"<GETVOLT>>", bytes([62]))  # 6.2 V
     assert gmc.get_battery_voltage() == pytest.approx(6.2)
