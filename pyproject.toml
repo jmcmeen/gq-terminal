@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "gq-terminal"
 version = "0.2.0"
-description = "Python interface for GQ GMC geiger counters using the GQ-RFC1201 protocol"
+description = "Python interface for GQ GMC Geiger counters using the GQ-RFC1201 protocol"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

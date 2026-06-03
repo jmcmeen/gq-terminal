@@ -88,9 +88,11 @@ def test_send_raw_fixed_length(gmc: GMCInterface, fake_serial) -> None:
     )
 
 
-def test_send_raw_returns_empty_on_no_response(gmc: GMCInterface, fake_serial) -> None:
-    # KEY-style commands produce no reply; send_raw should return b"" not raise.
-    assert gmc.send_raw(b"<KEY0>>") == b""
+def test_send_raw_raises_on_no_response(gmc: GMCInterface, fake_serial) -> None:
+    # No reply (a silent command or a timeout) surfaces as GMCError rather than
+    # a silent b"" — the two are indistinguishable at the wire level.
+    with pytest.raises(GMCError):
+        gmc.send_raw(b"<KEY0>>")
 
 
 def test_wrap_command_builds_frame() -> None:

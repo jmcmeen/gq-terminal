@@ -1,7 +1,7 @@
 """
 GMC Geiger Counter Interface.
 
-Communication interface for GQ GMC geiger counters using the GQ-RFC1201
+Communication interface for GQ GMC Geiger counters using the GQ-RFC1201
 protocol over serial. Spec: https://www.gqelectronicsllc.com/download/GQ-RFC1201.txt
 
 Tested against the GMC-600; other GMC-280/300/320 models should be largely
@@ -140,7 +140,7 @@ def parse_calibration(
 
 
 class GMCInterface:
-    """Interface for a GQ GMC geiger counter over a serial connection."""
+    """Interface for a GQ GMC Geiger counter over a serial connection."""
 
     def __init__(
         self,
@@ -545,17 +545,17 @@ class GMCInterface:
 
         ``command`` must include the ``<...>>`` framing (see
         :meth:`wrap_command`). If ``read_bytes`` is given, read exactly that
-        many bytes; otherwise drain whatever the device sends, returning ``b""``
-        if it stays silent (some commands, e.g. ``KEY``, don't reply). Intended
-        for exercising the protocol manually — most callers want the typed
-        methods, which parse the response.
+        many bytes; otherwise drain whatever the device sends.
+
+        Raises :class:`GMCError` if the device doesn't respond — a genuine
+        no-reply command (e.g. ``KEY``) and a timeout are indistinguishable at
+        the wire level, so both surface as an error rather than a silent ``b""``.
+        Intended for exercising the protocol manually; most callers want the
+        typed methods, which parse the response.
         """
         if read_bytes is not None:
             return self._send(command, read_bytes)
-        try:
-            return self._drain_response(command)
-        except GMCError:
-            return b""
+        return self._drain_response(command)
 
 
 class SerialPortInfo(NamedTuple):

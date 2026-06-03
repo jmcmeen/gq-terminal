@@ -1,7 +1,7 @@
 # Contributing to gq-terminal
 
 Thanks for your interest! This is a small, focused library for talking to GQ
-GMC geiger counters over serial. Contributions are welcome — bug reports,
+GMC Geiger counters over serial. Contributions are welcome — bug reports,
 hardware test reports, and pull requests alike.
 
 It's a **scientific instrument library**, so correctness matters more than

@@ -1,4 +1,4 @@
-"""Click-based command-line interface for GQ GMC geiger counters."""
+"""Click-based command-line interface for GQ GMC Geiger counters."""
 
 import csv
 import sys
@@ -96,8 +96,19 @@ def _open(
     return gmc
 
 
+_DOSE_DISCLAIMER = "derived value, not a certified dose"
+
+
 def _calibration_from_opt(usv_per_cpm: float | None) -> Calibration | None:
-    return Calibration.from_factor(usv_per_cpm) if usv_per_cpm else None
+    if usv_per_cpm is None:
+        return None
+    if usv_per_cpm <= 0:
+        raise click.BadParameter("--usv-per-cpm must be positive")
+    return Calibration.from_factor(usv_per_cpm)
+
+
+def _calibration_source(overridden: bool) -> str:
+    return "user-supplied" if overridden else "device"
 
 
 def usv_per_cpm_option(func: F) -> F:
@@ -124,11 +135,11 @@ def _dose_lines(gmc: GMCInterface, cpm: int, overridden: bool) -> list[str]:
             "Dose rate: n/a (no calibration found; pass --usv-per-cpm to supply one)"
         ]
     usv = cal.cpm_to_usv(cpm)
-    source = "user-supplied" if overridden else "device"
     return [
-        f"Dose rate: {usv:.3f} µSv/h  ({usv / 10.0:.4f} mR/h)",
+        f"Dose rate: {usv:.3f} µSv/h  ({cal.cpm_to_mr(cpm):.4f} mR/h)",
         click.style(
-            f"  (from {source} calibration — derived value, not a certified dose)",
+            f"  (from {_calibration_source(overridden)} calibration"
+            f" — {_DOSE_DISCLAIMER})",
             fg="yellow",
         ),
     ]
@@ -142,7 +153,7 @@ def _battery_line(voltage: float) -> str:
 @click.group()
 @click.version_option(package_name="gq-terminal", prog_name="gq-terminal")
 def main() -> None:
-    """GQ Terminal — command-line interface for GQ GMC geiger counters."""
+    """GQ Terminal — command-line interface for GQ GMC Geiger counters."""
 
 
 @main.command()
@@ -248,11 +259,11 @@ def monitor(
                     click.style("Warning: low battery may affect readings", fg="yellow")
                 )
             if calibration is not None:
-                src = "user-supplied" if usv_per_cpm is not None else "device"
+                src = _calibration_source(usv_per_cpm is not None)
                 click.echo(
                     click.style(
                         f"Dose rate shown from {src} calibration "
-                        "(derived, not a certified dose)",
+                        f"({_DOSE_DISCLAIMER})",
                         fg="yellow",
                     )
                 )
@@ -293,14 +304,16 @@ def monitor(
                     now = time.time()
                     if now - last_update >= 5.0:
                         # CPM and voltage change slowly; sample them less often.
-                        # Pause the heartbeat to avoid intermixing reads.
-                        gmc.stop_heartbeat()
+                        # Pause the heartbeat to avoid intermixing reads, and
+                        # always restart it (finally) even if a read fails.
                         try:
+                            gmc.stop_heartbeat()
                             cpm = gmc.get_cpm()
                             voltage = gmc.get_battery_voltage()
                         except GMCError:
                             pass
-                        gmc.start_heartbeat()
+                        finally:
+                            gmc.start_heartbeat()
                         last_update = now
 
                     if quiet:
@@ -629,11 +642,17 @@ def raw(
     COMMAND may be a bare name or a full frame, e.g. 'GETVER' or '<GETVER>>'.
     For exercising GQ-RFC1201 directly; most tasks have a dedicated subcommand.
     """
-    frame = (
-        command.encode("ascii", "ignore")
-        if command.startswith("<")
-        else GMCInterface.wrap_command(command)
-    )
+    try:
+        frame = (
+            command.encode("ascii")
+            if command.startswith("<")
+            else GMCInterface.wrap_command(command)
+        )
+    except UnicodeEncodeError as exc:
+        raise click.ClickException(
+            "COMMAND must be ASCII (GQ-RFC1201 frames are ASCII); "
+            "non-ASCII characters are not allowed."
+        ) from exc
     gmc = _open(port, baudrate, timeout)
     try:
         resp = gmc.send_raw(frame, read_bytes)

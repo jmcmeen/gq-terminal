@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "GQ Terminal: a Python interface for GQ GMC geiger counters"
+title: "GQ Terminal: a Python interface for GQ GMC Geiger counters"
 message: "If you use this software, please cite it using the metadata in this file."
 type: software
 authors:
@@ -25,7 +25,7 @@ keywords:
   - python
 abstract: >
   A Python library and command-line tool for communicating with GQ GMC
-  geiger counters (GMC-280, GMC-300, GMC-320, GMC-500, GMC-600) over a
+  Geiger counters (GMC-280, GMC-300, GMC-320, GMC-500, GMC-600) over a
   serial connection, implementing the GQ-RFC1201 protocol. Provides real-time
   CPS / CPM monitoring, configuration access, historical data retrieval, and
   CSV logging.

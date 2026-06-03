@@ -70,6 +70,14 @@ def test_find_gmc_port_ignores_unlikely_ports_by_default(fake_comports):
     assert find_gmc_port() is None
 
 
+def test_find_gmc_port_probe_all_probes_unlikely_port(fake_comports, fake_serial):
+    # probe_all=True opts into probing ports not flagged likely_gmc.
+    fake_serial.add_handler(re.compile(rb"<GETVER>>"), b"GMC-320Re 3.01")
+    fake_comports([_port("/dev/ttyS0", None, None, "builtin")])
+    assert find_gmc_port() is None  # default skips the unlikely port
+    assert find_gmc_port(probe_all=True) == "/dev/ttyS0"
+
+
 def test_ports_command_flags_likely_gmc(fake_comports):
     fake_comports([_port("/dev/ttyUSB0", *CH340, "USB Serial")])
     result = CliRunner().invoke(main, ["ports"])

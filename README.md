@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/1044659541.svg)](https://doi.org/10.5281/zenodo.20129915)
 
-A Python library and command-line interface for [GQ GMC geiger
+A Python library and command-line interface for [GQ GMC Geiger
 counters](https://www.gqelectronicsllc.com/), implementing the [GQ-RFC1201
 protocol](https://www.gqelectronicsllc.com/download/GQ-RFC1201.txt). GQ
 publishes the protocol and
@@ -100,7 +100,7 @@ temperature/clock/gyroscope (where supported), and running statistics
 (sample count, average/max/min CPS, total counts). The layout reflows: it
 scrolls on a short terminal and the graph grows to fill a tall one. Keys: the
 update interval is adjustable with `+` / `-`, the graph toggles between CPS and
-CPM with `g`, `?` opens a glossary, `a` an about box, and `q` quits. It
+CPM with `g`, `?` opens a glossary, `a` opens an about box, and `q` quits. It
 requires the optional `tui` extra (`pip install 'gq-terminal[tui]'`); without
 it the command prints an install hint and exits.
 
@@ -248,7 +248,7 @@ BibTeX:
 ```bibtex
 @software{mcmeen_gq_terminal,
   author       = {McMeen, John},
-  title        = {GQ Terminal: a Python interface for GQ GMC geiger counters},
+  title        = {GQ Terminal: a Python interface for GQ GMC Geiger counters},
   year         = {2026},
   publisher    = {Zenodo},
   doi          = {10.5281/zenodo.20129915},

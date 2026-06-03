@@ -44,7 +44,7 @@ _GLOSSARY = (
 
 _ABOUT = (
     f"[b $accent]GQ Terminal[/]  v{__version__}\n\n"
-    "A small, scriptable Python library, CLI, and TUI for GQ GMC geiger "
+    "A small, scriptable Python library, CLI, and TUI for GQ GMC Geiger "
     "counters, speaking the GQ-RFC1201 protocol over a serial port.\n\n"
     "Not affiliated with GQ Electronics, and not a certified instrument — do "
     "not use its readings for safety, regulatory, or medical decisions.\n\n"
@@ -388,10 +388,10 @@ class GMCMonitorApp(App[None]):
 
     def _read_slow(self) -> _SlowReading:
         # Pause the stream so these replies aren't interleaved with heartbeat
-        # packets, then resume it. Temperature/datetime/gyro return None on
-        # firmware that doesn't support them.
-        self._gmc.stop_heartbeat()
+        # packets; the finally restarts it even if stop/read raises.
+        # Temperature/datetime/gyro return None on firmware that lacks them.
         try:
+            self._gmc.stop_heartbeat()
             return _SlowReading(
                 cpm=self._gmc.get_cpm(),
                 voltage=self._gmc.get_battery_voltage(),

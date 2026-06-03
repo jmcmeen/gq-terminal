@@ -1,4 +1,4 @@
-"""GQ Terminal — Python interface for GQ GMC geiger counters (GQ-RFC1201)."""
+"""GQ Terminal — Python interface for GQ GMC Geiger counters (GQ-RFC1201)."""
 
 from importlib.metadata import PackageNotFoundError, version
 
