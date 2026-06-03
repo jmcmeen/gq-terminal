@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0]
+
+### Added
+- Serial-port auto-discovery. New public functions `discover_ports()` (lists
+  serial ports, flagging those whose USB VID/PID matches a bridge chip known
+  to ship on GMC counters) and `find_gmc_port()` (probes candidates with
+  GETVER and returns the first that replies `GMC-...`), plus the
+  `SerialPortInfo` namedtuple they return.
+- CLI `ports` subcommand to list detected serial ports.
+- `--port` is now optional on all CLI commands; when omitted, the device is
+  auto-detected via `find_gmc_port()`. If detection fails, the discovered
+  ports are listed so you can pass `--port` explicitly.
+
 ## [0.1.0]
 
 Initial public release.

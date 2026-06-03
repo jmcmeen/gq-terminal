@@ -10,7 +10,7 @@ from typing import Any, TypeVar
 
 import click
 
-from .interface import GMCError, GMCInterface
+from .interface import GMCError, GMCInterface, discover_ports, find_gmc_port
 
 HIGH_CPS_THRESHOLD = 100
 HIGH_CPS_LOG_THRESHOLD = 200
@@ -22,7 +22,10 @@ F = TypeVar("F", bound=Callable[..., Any])
 def common_options(func: F) -> F:
     """Decorator that adds --port / --baudrate / --timeout to a command."""
     func = click.option(
-        "--port", "-p", required=True, help="Serial port (e.g., COM3, /dev/ttyUSB0)"
+        "--port",
+        "-p",
+        default=None,
+        help="Serial port (e.g., COM3, /dev/ttyUSB0). Omit to auto-detect.",
     )(func)
     func = click.option(
         "--baudrate", "-b", default=115200, show_default=True, help="Baud rate"
@@ -37,10 +40,47 @@ def common_options(func: F) -> F:
     return func
 
 
-def _open(port: str, baudrate: int, timeout: float) -> GMCInterface:
+def _resolve_port(port: str | None, baudrate: int, timeout: float) -> str:
+    """Return ``port`` if given, otherwise auto-detect a GMC device.
+
+    On failure to auto-detect, print the serial ports we did see (to help the
+    user pass ``--port`` explicitly) and exit non-zero.
+    """
+    if port:
+        return port
+
+    click.echo("No --port given; searching for a GMC device...")
+    found = find_gmc_port(baudrate=baudrate, timeout=min(timeout, 1.0))
+    if found:
+        click.echo(click.style(f"Found GMC on {found}", fg="green"))
+        return found
+
+    candidates = discover_ports()
+    if candidates:
+        click.echo(
+            click.style("No GMC auto-detected. Serial ports found:", fg="red"),
+            err=True,
+        )
+        for info in candidates:
+            ids = (
+                f" [{info.vid:04x}:{info.pid:04x}]"
+                if info.vid is not None and info.pid is not None
+                else ""
+            )
+            tag = " (likely GMC)" if info.likely_gmc else ""
+            click.echo(f"  {info.device}{ids} {info.description}{tag}", err=True)
+        click.echo("Re-run with --port <device>.", err=True)
+    else:
+        click.echo(click.style("No serial ports found.", fg="red"), err=True)
+    sys.exit(1)
+
+
+def _open(port: str | None, baudrate: int, timeout: float) -> GMCInterface:
+    port = _resolve_port(port, baudrate, timeout)
+    click.echo(f"Connecting to GMC on {port}...")
     gmc = GMCInterface(port, baudrate, timeout)
     if not gmc.connect():
-        click.echo(click.style("Failed to connect to device", fg="red"), err=True)
+        click.echo(click.style(f"Failed to connect to {port}", fg="red"), err=True)
         sys.exit(1)
     return gmc
 
@@ -57,11 +97,27 @@ def main() -> None:
 
 
 @main.command()
+def ports() -> None:
+    """List detected serial ports (likely-GMC ports are flagged)."""
+    found = discover_ports()
+    if not found:
+        click.echo("No serial ports found.")
+        return
+    for info in found:
+        ids = (
+            f"{info.vid:04x}:{info.pid:04x}"
+            if info.vid is not None and info.pid is not None
+            else "----:----"
+        )
+        tag = click.style("  <- likely GMC", fg="green") if info.likely_gmc else ""
+        click.echo(f"{info.device:<20} {ids}  {info.description}{tag}")
+
+
+@main.command()
 @common_options
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed device information")
-def info(port: str, baudrate: int, timeout: float, verbose: bool) -> None:
+def info(port: str | None, baudrate: int, timeout: float, verbose: bool) -> None:
     """Get device information and current readings."""
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         click.echo(click.style("Connected", fg="green"))
@@ -109,7 +165,7 @@ def info(port: str, baudrate: int, timeout: float, verbose: bool) -> None:
 )
 @click.option("--quiet", "-q", is_flag=True, help="Minimal output (CPS only)")
 def monitor(
-    port: str,
+    port: str | None,
     baudrate: int,
     timeout: float,
     duration: int,
@@ -117,7 +173,6 @@ def monitor(
     quiet: bool,
 ) -> None:
     """Real-time radiation monitoring via heartbeat mode."""
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         if not quiet:
@@ -226,7 +281,7 @@ def monitor(
     "--duration", "-d", default=0, help="Logging duration in seconds (0 = infinite)"
 )
 def log(
-    port: str,
+    port: str | None,
     baudrate: int,
     timeout: float,
     output: str | None,
@@ -238,7 +293,6 @@ def log(
         output = f"radiation_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     log_path = Path(output)
 
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         version = gmc.get_version()
@@ -333,7 +387,7 @@ def log(
     show_default=True,
 )
 def history(
-    port: str,
+    port: str | None,
     baudrate: int,
     timeout: float,
     address: int,
@@ -348,7 +402,6 @@ def history(
         )
         sys.exit(1)
 
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         click.echo(f"Reading {length} bytes from address {address}...")
@@ -385,9 +438,8 @@ def history(
 @main.command()
 @common_options
 @click.argument("key_num", type=click.IntRange(0, 3))
-def key(port: str, baudrate: int, timeout: float, key_num: int) -> None:
+def key(port: str | None, baudrate: int, timeout: float, key_num: int) -> None:
     """Send a software key press (0-3 = S1-S4)."""
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         gmc.send_key(key_num)
@@ -407,9 +459,10 @@ def config() -> None:
 @config.command("read")
 @common_options
 @click.option("--output", "-o", help="Output file for configuration data")
-def config_read(port: str, baudrate: int, timeout: float, output: str | None) -> None:
+def config_read(
+    port: str | None, baudrate: int, timeout: float, output: str | None
+) -> None:
     """Read the device's 256-byte configuration block."""
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         data = gmc.get_config()
@@ -435,10 +488,9 @@ def config_read(port: str, baudrate: int, timeout: float, output: str | None) ->
 @click.argument("address", type=click.IntRange(0, 255))
 @click.argument("value", type=click.IntRange(0, 255))
 def config_write(
-    port: str, baudrate: int, timeout: float, address: int, value: int
+    port: str | None, baudrate: int, timeout: float, address: int, value: int
 ) -> None:
     """Write a single byte to configuration memory."""
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         if gmc.write_config(address, value):
@@ -458,9 +510,8 @@ def config_write(
 @config.command("erase")
 @common_options
 @click.confirmation_option(prompt="Are you sure you want to erase all configuration?")
-def config_erase(port: str, baudrate: int, timeout: float) -> None:
+def config_erase(port: str | None, baudrate: int, timeout: float) -> None:
     """Erase all configuration data (destructive)."""
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         if gmc.erase_config():

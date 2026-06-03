@@ -14,12 +14,28 @@ import struct
 import time
 from datetime import datetime
 from types import TracebackType
+from typing import NamedTuple
 
 import serial
+from serial.tools import list_ports
 
 logger = logging.getLogger(__name__)
 
 _ACK = 0xAA
+
+# USB VID/PID pairs for the USB-serial bridge chips seen on GMC counters. The
+# WCH CH340 is the one GQ actually ships (verified on a GMC-600+); CP210x and
+# FTDI are common bridges included so a re-cased or cloned unit still ranks
+# ahead of, say, an Arduino. Matching one of these only marks a port as a
+# *candidate* — it is not proof a GMC is attached, which is why find_gmc_port()
+# still confirms by probing.
+_KNOWN_USB_IDS = frozenset(
+    {
+        (0x1A86, 0x7523),  # WCH CH340
+        (0x10C4, 0xEA60),  # Silicon Labs CP210x
+        (0x0403, 0x6001),  # FTDI FT232R
+    }
+)
 
 
 class GMCError(Exception):
@@ -382,3 +398,67 @@ class GMCInterface:
                 "factory_reset() is destructive; pass confirm=True to proceed"
             )
         return self._send(self._wrap("FACTORYRESET"), 1)[0] == _ACK
+
+
+class SerialPortInfo(NamedTuple):
+    """A discovered serial port.
+
+    ``likely_gmc`` is True when the port's USB VID/PID matches a bridge chip
+    known to ship on GMC counters. It is a hint for ranking, not a guarantee —
+    use :func:`find_gmc_port` to confirm by probing. ``vid``/``pid`` are None
+    for non-USB ports (e.g. a built-in ``/dev/ttyS0``).
+    """
+
+    device: str
+    description: str
+    vid: int | None
+    pid: int | None
+    likely_gmc: bool
+
+
+def discover_ports() -> list[SerialPortInfo]:
+    """Enumerate serial ports, ranking likely-GMC ports first.
+
+    Pure: opens nothing. Ports whose USB VID/PID matches a known bridge chip
+    (``likely_gmc``) sort ahead of the rest; order is otherwise stable, so the
+    OS enumeration order is preserved within each group.
+    """
+    ports = []
+    for p in list_ports.comports():
+        likely = p.vid is not None and (p.vid, p.pid) in _KNOWN_USB_IDS
+        ports.append(
+            SerialPortInfo(p.device, p.description or "", p.vid, p.pid, likely)
+        )
+    ports.sort(key=lambda info: not info.likely_gmc)
+    return ports
+
+
+def find_gmc_port(
+    baudrate: int = 115200, timeout: float = 1.0, probe_all: bool = False
+) -> str | None:
+    """Return the port of the first responding GMC device, or None if none found.
+
+    Probes candidates from :func:`discover_ports` by opening each one and
+    sending GETVER, accepting the first whose reply starts with ``GMC-``. By
+    default only ports flagged ``likely_gmc`` are probed; pass
+    ``probe_all=True`` to probe every serial port (slower, and it opens
+    unrelated devices, which can disturb other hardware).
+
+    Side effects: opens and closes each probed port. A short ``timeout`` keeps a
+    non-GMC device that never replies from stalling discovery.
+    """
+    for info in discover_ports():
+        if not probe_all and not info.likely_gmc:
+            continue
+        iface = GMCInterface(info.device, baudrate, timeout)
+        if not iface.connect():
+            continue
+        try:
+            version = iface.get_version()
+        except GMCError:
+            continue
+        finally:
+            iface.disconnect()
+        if version.startswith("GMC-"):
+            return info.device
+    return None

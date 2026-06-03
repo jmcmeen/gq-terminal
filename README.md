@@ -64,6 +64,8 @@ The context manager raises `GMCError` on connection failure. Outside a
 ### Command line
 
 ```bash
+gq-terminal ports                     # list serial ports; likely-GMC ones flagged
+
 gq-terminal info --port /dev/ttyUSB0
 gq-terminal info --port /dev/ttyUSB0 --verbose
 
@@ -77,7 +79,28 @@ gq-terminal --help
 gq-terminal monitor --help
 ```
 
+`--port` is optional: omit it and the device is auto-detected (the first
+serial port whose USB chip matches a GMC counter and that answers a `GETVER`
+probe). If detection fails, the discovered ports are listed so you can pass
+`--port` explicitly.
+
+```bash
+gq-terminal info                      # auto-detect the port
+```
+
 You can also invoke the CLI as a module: `python -m gq_terminal info ...`.
+
+In Python, the same discovery is available via `discover_ports()` and
+`find_gmc_port()`:
+
+```python
+from gq_terminal import GMCInterface, find_gmc_port
+
+port = find_gmc_port()                # None if no GMC is found
+if port:
+    with GMCInterface(port) as gmc:
+        print(gmc.get_version())
+```
 
 ## Supported commands
 
@@ -106,7 +129,14 @@ Implements all 26 commands defined by GQ-RFC1201:
 
 **Linux: `Permission denied: /dev/ttyUSB0`** — your user needs access to the
 serial device. The portable fix is to add yourself to the `dialout` group
-(`sudo usermod -a -G dialout $USER`) and log out / back in.
+(`sudo usermod -a -G dialout $USER`) and log out / back in. Auto-detection
+(`gq-terminal info` with no `--port`, or `find_gmc_port()`) hits the same
+permission wall, so fix the group membership first.
+
+**`gq-terminal ports` lists my device but auto-detect doesn't find it** — the
+counter has to answer a `GETVER` probe to be auto-selected. Check the baud
+rate (`--baudrate 57600` for older GMC-300 firmware) and that nothing else
+holds the port open; or just pass `--port` explicitly.
 
 **`Short read: expected N bytes, got 0`** — usually wrong baud rate (try 57600
 for older firmware), wrong port, or the device is off. With heartbeat mode
