@@ -1,4 +1,4 @@
-"""Click-based command-line interface for GQ GMC geiger counters."""
+"""Click-based command-line interface for GQ GMC Geiger counters."""
 
 import csv
 import sys
@@ -10,7 +10,13 @@ from typing import Any, TypeVar
 
 import click
 
-from .interface import GMCError, GMCInterface
+from .interface import (
+    Calibration,
+    GMCError,
+    GMCInterface,
+    discover_ports,
+    find_gmc_port,
+)
 
 HIGH_CPS_THRESHOLD = 100
 HIGH_CPS_LOG_THRESHOLD = 200
@@ -22,7 +28,10 @@ F = TypeVar("F", bound=Callable[..., Any])
 def common_options(func: F) -> F:
     """Decorator that adds --port / --baudrate / --timeout to a command."""
     func = click.option(
-        "--port", "-p", required=True, help="Serial port (e.g., COM3, /dev/ttyUSB0)"
+        "--port",
+        "-p",
+        default=None,
+        help="Serial port (e.g., COM3, /dev/ttyUSB0). Omit to auto-detect.",
     )(func)
     func = click.option(
         "--baudrate", "-b", default=115200, show_default=True, help="Baud rate"
@@ -37,12 +46,103 @@ def common_options(func: F) -> F:
     return func
 
 
-def _open(port: str, baudrate: int, timeout: float) -> GMCInterface:
-    gmc = GMCInterface(port, baudrate, timeout)
+def _resolve_port(port: str | None, baudrate: int, timeout: float) -> str:
+    """Return ``port`` if given, otherwise auto-detect a GMC device.
+
+    On failure to auto-detect, print the serial ports we did see (to help the
+    user pass ``--port`` explicitly) and exit non-zero.
+    """
+    if port:
+        return port
+
+    click.echo("No --port given; searching for a GMC device...")
+    found = find_gmc_port(baudrate=baudrate, timeout=min(timeout, 1.0))
+    if found:
+        click.echo(click.style(f"Found GMC on {found}", fg="green"))
+        return found
+
+    candidates = discover_ports()
+    if candidates:
+        click.echo(
+            click.style("No GMC auto-detected. Serial ports found:", fg="red"),
+            err=True,
+        )
+        for info in candidates:
+            ids = (
+                f" [{info.vid:04x}:{info.pid:04x}]"
+                if info.vid is not None and info.pid is not None
+                else ""
+            )
+            tag = " (likely GMC)" if info.likely_gmc else ""
+            click.echo(f"  {info.device}{ids} {info.description}{tag}", err=True)
+        click.echo("Re-run with --port <device>.", err=True)
+    else:
+        click.echo(click.style("No serial ports found.", fg="red"), err=True)
+    sys.exit(1)
+
+
+def _open(
+    port: str | None,
+    baudrate: int,
+    timeout: float,
+    calibration: Calibration | None = None,
+) -> GMCInterface:
+    port = _resolve_port(port, baudrate, timeout)
+    click.echo(f"Connecting to GMC on {port}...")
+    gmc = GMCInterface(port, baudrate, timeout, calibration=calibration)
     if not gmc.connect():
-        click.echo(click.style("Failed to connect to device", fg="red"), err=True)
+        click.echo(click.style(f"Failed to connect to {port}", fg="red"), err=True)
         sys.exit(1)
     return gmc
+
+
+_DOSE_DISCLAIMER = "derived value, not a certified dose"
+
+
+def _calibration_from_opt(usv_per_cpm: float | None) -> Calibration | None:
+    if usv_per_cpm is None:
+        return None
+    if usv_per_cpm <= 0:
+        raise click.BadParameter("--usv-per-cpm must be positive")
+    return Calibration.from_factor(usv_per_cpm)
+
+
+def _calibration_source(overridden: bool) -> str:
+    return "user-supplied" if overridden else "device"
+
+
+def usv_per_cpm_option(func: F) -> F:
+    """Decorator adding --usv-per-cpm to a dose-aware command."""
+    return click.option(
+        "--usv-per-cpm",
+        type=float,
+        default=None,
+        help=(
+            "Override calibration: µSv/h per CPM (e.g. 0.0065). "
+            "Omit to use the device's stored calibration."
+        ),
+    )(func)
+
+
+def _dose_lines(gmc: GMCInterface, cpm: int, overridden: bool) -> list[str]:
+    """Render dose-rate lines for ``cpm``, or a hint if no calibration exists."""
+    try:
+        cal = gmc.get_calibration()
+    except GMCError:
+        cal = None
+    if cal is None:
+        return [
+            "Dose rate: n/a (no calibration found; pass --usv-per-cpm to supply one)"
+        ]
+    usv = cal.cpm_to_usv(cpm)
+    return [
+        f"Dose rate: {usv:.3f} µSv/h  ({cal.cpm_to_mr(cpm):.4f} mR/h)",
+        click.style(
+            f"  (from {_calibration_source(overridden)} calibration"
+            f" — {_DOSE_DISCLAIMER})",
+            fg="yellow",
+        ),
+    ]
 
 
 def _battery_line(voltage: float) -> str:
@@ -53,16 +153,39 @@ def _battery_line(voltage: float) -> str:
 @click.group()
 @click.version_option(package_name="gq-terminal", prog_name="gq-terminal")
 def main() -> None:
-    """GQ Terminal — command-line interface for GQ GMC geiger counters."""
+    """GQ Terminal — command-line interface for GQ GMC Geiger counters."""
+
+
+@main.command()
+def ports() -> None:
+    """List detected serial ports (likely-GMC ports are flagged)."""
+    found = discover_ports()
+    if not found:
+        click.echo("No serial ports found.")
+        return
+    for info in found:
+        ids = (
+            f"{info.vid:04x}:{info.pid:04x}"
+            if info.vid is not None and info.pid is not None
+            else "----:----"
+        )
+        tag = click.style("  <- likely GMC", fg="green") if info.likely_gmc else ""
+        click.echo(f"{info.device:<20} {ids}  {info.description}{tag}")
 
 
 @main.command()
 @common_options
+@usv_per_cpm_option
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed device information")
-def info(port: str, baudrate: int, timeout: float, verbose: bool) -> None:
+def info(
+    port: str | None,
+    baudrate: int,
+    timeout: float,
+    usv_per_cpm: float | None,
+    verbose: bool,
+) -> None:
     """Get device information and current readings."""
-    click.echo(f"Connecting to GMC on {port}...")
-    gmc = _open(port, baudrate, timeout)
+    gmc = _open(port, baudrate, timeout, _calibration_from_opt(usv_per_cpm))
     try:
         click.echo(click.style("Connected", fg="green"))
         version = gmc.get_version()
@@ -75,6 +198,8 @@ def info(port: str, baudrate: int, timeout: float, verbose: bool) -> None:
         click.echo(f"Serial Number: {serial_num}")
         click.echo(_battery_line(voltage))
         click.echo(f"Current CPM: {cpm}")
+        for line in _dose_lines(gmc, cpm, usv_per_cpm is not None):
+            click.echo(line)
 
         if voltage < LOW_BATTERY_VOLTS:
             click.echo(click.style("Low battery warning", fg="yellow"))
@@ -101,6 +226,7 @@ def info(port: str, baudrate: int, timeout: float, verbose: bool) -> None:
 
 @main.command()
 @common_options
+@usv_per_cpm_option
 @click.option(
     "--duration", "-d", default=0, help="Monitoring duration in seconds (0 = infinite)"
 )
@@ -109,17 +235,21 @@ def info(port: str, baudrate: int, timeout: float, verbose: bool) -> None:
 )
 @click.option("--quiet", "-q", is_flag=True, help="Minimal output (CPS only)")
 def monitor(
-    port: str,
+    port: str | None,
     baudrate: int,
     timeout: float,
+    usv_per_cpm: float | None,
     duration: int,
     interval: float,
     quiet: bool,
 ) -> None:
     """Real-time radiation monitoring via heartbeat mode."""
-    click.echo(f"Connecting to GMC on {port}...")
-    gmc = _open(port, baudrate, timeout)
+    gmc = _open(port, baudrate, timeout, _calibration_from_opt(usv_per_cpm))
     try:
+        try:
+            calibration = gmc.get_calibration()
+        except GMCError:
+            calibration = None
         if not quiet:
             click.echo(f"Connected to {gmc.get_version()}")
             voltage = gmc.get_battery_voltage()
@@ -128,15 +258,25 @@ def monitor(
                 click.echo(
                     click.style("Warning: low battery may affect readings", fg="yellow")
                 )
+            if calibration is not None:
+                src = _calibration_source(usv_per_cpm is not None)
+                click.echo(
+                    click.style(
+                        f"Dose rate shown from {src} calibration "
+                        f"({_DOSE_DISCLAIMER})",
+                        fg="yellow",
+                    )
+                )
             click.echo("\nStarting real-time monitoring (Ctrl+C to stop)\n")
             click.echo(
                 "Time".ljust(12)
                 + "CPS".rjust(6)
                 + "CPM".rjust(6)
+                + ("µSv/h".rjust(10) if calibration else "")
                 + "Battery".rjust(10)
                 + "  Status"
             )
-            click.echo("-" * 50)
+            click.echo("-" * 60)
 
         gmc.start_heartbeat()
 
@@ -164,14 +304,16 @@ def monitor(
                     now = time.time()
                     if now - last_update >= 5.0:
                         # CPM and voltage change slowly; sample them less often.
-                        # Pause the heartbeat to avoid intermixing reads.
-                        gmc.stop_heartbeat()
+                        # Pause the heartbeat to avoid intermixing reads, and
+                        # always restart it (finally) even if a read fails.
                         try:
+                            gmc.stop_heartbeat()
                             cpm = gmc.get_cpm()
                             voltage = gmc.get_battery_voltage()
                         except GMCError:
                             pass
-                        gmc.start_heartbeat()
+                        finally:
+                            gmc.start_heartbeat()
                         last_update = now
 
                     if quiet:
@@ -182,9 +324,15 @@ def monitor(
                             status.append("HIGH")
                         if voltage and voltage < LOW_BATTERY_VOLTS:
                             status.append("LOW-BAT")
+                        dose = (
+                            f"{calibration.cpm_to_usv(cpm):>10.3f}"
+                            if calibration
+                            else ""
+                        )
                         click.echo(
                             f"{datetime.now().strftime('%H:%M:%S'):<12}"
-                            f"{cps:>6}{cpm:>6}{voltage:>8.1f}V  " + " ".join(status)
+                            f"{cps:>6}{cpm:>6}{dose}{voltage:>8.1f}V  "
+                            + " ".join(status)
                         )
 
                 time.sleep(interval)
@@ -214,6 +362,47 @@ def monitor(
 
 @main.command()
 @common_options
+@usv_per_cpm_option
+@click.option(
+    "--interval",
+    "-i",
+    default=1.0,
+    show_default=True,
+    help="Initial display update interval in seconds (adjustable in-app)",
+)
+def tui(
+    port: str | None,
+    baudrate: int,
+    timeout: float,
+    usv_per_cpm: float | None,
+    interval: float,
+) -> None:
+    """Launch an interactive terminal dashboard (requires the 'tui' extra)."""
+    try:
+        from .tui import run_tui
+    except ImportError:
+        click.echo(
+            click.style(
+                "The TUI requires Textual. Install it with: "
+                "pip install 'gq-terminal[tui]'",
+                fg="red",
+            ),
+            err=True,
+        )
+        sys.exit(1)
+
+    gmc = _open(port, baudrate, timeout, _calibration_from_opt(usv_per_cpm))
+    try:
+        run_tui(gmc, interval)
+    except GMCError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+    finally:
+        gmc.disconnect()
+
+
+@main.command()
+@common_options
 @click.option("--output", "-o", help="Output CSV file (default: auto-generated)")
 @click.option(
     "--interval",
@@ -226,7 +415,7 @@ def monitor(
     "--duration", "-d", default=0, help="Logging duration in seconds (0 = infinite)"
 )
 def log(
-    port: str,
+    port: str | None,
     baudrate: int,
     timeout: float,
     output: str | None,
@@ -238,7 +427,6 @@ def log(
         output = f"radiation_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     log_path = Path(output)
 
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         version = gmc.get_version()
@@ -333,7 +521,7 @@ def log(
     show_default=True,
 )
 def history(
-    port: str,
+    port: str | None,
     baudrate: int,
     timeout: float,
     address: int,
@@ -348,7 +536,6 @@ def history(
         )
         sys.exit(1)
 
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         click.echo(f"Reading {length} bytes from address {address}...")
@@ -385,13 +572,96 @@ def history(
 @main.command()
 @common_options
 @click.argument("key_num", type=click.IntRange(0, 3))
-def key(port: str, baudrate: int, timeout: float, key_num: int) -> None:
+def key(port: str | None, baudrate: int, timeout: float, key_num: int) -> None:
     """Send a software key press (0-3 = S1-S4)."""
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         gmc.send_key(key_num)
         click.echo(click.style(f"Sent key S{key_num + 1}", fg="green"))
+    except GMCError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+    finally:
+        gmc.disconnect()
+
+
+@main.command("set-time")
+@common_options
+@click.option(
+    "--time",
+    "when",
+    default=None,
+    help="ISO timestamp to set (e.g. 2026-06-02T14:30:00). Default: computer's now.",
+)
+def set_time(port: str | None, baudrate: int, timeout: float, when: str | None) -> None:
+    """Sync the device clock to the computer (or a given --time)."""
+    try:
+        dt = datetime.fromisoformat(when) if when else datetime.now()
+    except ValueError as e:
+        click.echo(click.style(f"Invalid --time: {e}", fg="red"), err=True)
+        sys.exit(1)
+    gmc = _open(port, baudrate, timeout)
+    try:
+        if gmc.set_datetime(dt):
+            click.echo(
+                click.style(f"Device clock set to {dt:%Y-%m-%d %H:%M:%S}", fg="green")
+            )
+        else:
+            click.echo(
+                click.style("Device did not acknowledge the time set", fg="red"),
+                err=True,
+            )
+            sys.exit(1)
+    except GMCError as e:
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+        sys.exit(1)
+    finally:
+        gmc.disconnect()
+
+
+@main.command()
+@common_options
+@click.argument("command")
+@click.option(
+    "--read",
+    "-n",
+    "read_bytes",
+    type=int,
+    default=None,
+    help="Read exactly N bytes (default: drain whatever the device returns)",
+)
+def raw(
+    port: str | None,
+    baudrate: int,
+    timeout: float,
+    command: str,
+    read_bytes: int | None,
+) -> None:
+    """Send a raw protocol command and print the response bytes.
+
+    COMMAND may be a bare name or a full frame, e.g. 'GETVER' or '<GETVER>>'.
+    For exercising GQ-RFC1201 directly; most tasks have a dedicated subcommand.
+    """
+    try:
+        frame = (
+            command.encode("ascii")
+            if command.startswith("<")
+            else GMCInterface.wrap_command(command)
+        )
+    except UnicodeEncodeError as exc:
+        raise click.ClickException(
+            "COMMAND must be ASCII (GQ-RFC1201 frames are ASCII); "
+            "non-ASCII characters are not allowed."
+        ) from exc
+    gmc = _open(port, baudrate, timeout)
+    try:
+        resp = gmc.send_raw(frame, read_bytes)
+        click.echo(f"Sent: {frame!r}")
+        if not resp:
+            click.echo("Response: (none)")
+        else:
+            click.echo(f"Response ({len(resp)} bytes): {resp.hex(' ')}")
+            click.echo(f"ASCII: {resp.decode('ascii', errors='replace')!r}")
     except GMCError as e:
         click.echo(click.style(f"Error: {e}", fg="red"), err=True)
         sys.exit(1)
@@ -407,9 +677,10 @@ def config() -> None:
 @config.command("read")
 @common_options
 @click.option("--output", "-o", help="Output file for configuration data")
-def config_read(port: str, baudrate: int, timeout: float, output: str | None) -> None:
+def config_read(
+    port: str | None, baudrate: int, timeout: float, output: str | None
+) -> None:
     """Read the device's 256-byte configuration block."""
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         data = gmc.get_config()
@@ -435,10 +706,9 @@ def config_read(port: str, baudrate: int, timeout: float, output: str | None) ->
 @click.argument("address", type=click.IntRange(0, 255))
 @click.argument("value", type=click.IntRange(0, 255))
 def config_write(
-    port: str, baudrate: int, timeout: float, address: int, value: int
+    port: str | None, baudrate: int, timeout: float, address: int, value: int
 ) -> None:
     """Write a single byte to configuration memory."""
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         if gmc.write_config(address, value):
@@ -458,9 +728,8 @@ def config_write(
 @config.command("erase")
 @common_options
 @click.confirmation_option(prompt="Are you sure you want to erase all configuration?")
-def config_erase(port: str, baudrate: int, timeout: float) -> None:
+def config_erase(port: str | None, baudrate: int, timeout: float) -> None:
     """Erase all configuration data (destructive)."""
-    click.echo(f"Connecting to GMC on {port}...")
     gmc = _open(port, baudrate, timeout)
     try:
         if gmc.erase_config():

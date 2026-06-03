@@ -2,7 +2,7 @@
 # Most targets shell out to `uv` for fast, reproducible installs.
 # Install uv once with:  curl -LsSf https://astral.sh/uv/install.sh | sh
 
-.PHONY: help install dev sync lock test test-cov lint format typecheck check build clean
+.PHONY: help install install-tui dev sync lock test test-cov lint format typecheck check build clean
 
 UV ?= uv
 
@@ -13,8 +13,11 @@ help: ## Show this help.
 install: ## Install the package (no dev deps) into the project venv.
 	$(UV) sync --no-dev
 
-dev: ## Install with dev dependencies (default for contributors).
-	$(UV) sync --extra dev
+install-tui: ## Install the package with the optional Textual TUI extra.
+	$(UV) sync --no-dev --extra tui
+
+dev: ## Install with dev dependencies, incl. the TUI extra (default for contributors).
+	$(UV) sync --extra dev --extra tui
 
 sync: dev ## Alias for `make dev`.
 

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gq-terminal"
-version = "0.1.0"
-description = "Python interface for GQ GMC geiger counters using the GQ-RFC1201 protocol"
+version = "0.2.0"
+description = "Python interface for GQ GMC Geiger counters using the GQ-RFC1201 protocol"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -34,14 +34,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+tui = [
+    "textual>=0.60",
+]
 dev = [
+    "gq-terminal[tui]",
     "pytest>=7.0",
+    "pytest-asyncio",
     "pytest-cov",
     "black",
     "ruff",
     "mypy",
     "types-pyserial",
     "build",
+    "twine",
 ]
 
 [project.urls]
@@ -62,6 +68,8 @@ include = [
     "tests",
     "examples",
     "README.md",
+    "DISCLAIMERS.md",
+    "CONTRIBUTING.md",
     "LICENSE",
     "CHANGELOG.md",
     "CITATION.cff",
@@ -84,6 +92,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["gq_terminal"]
